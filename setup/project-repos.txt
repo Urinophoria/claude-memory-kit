@@ -1,0 +1,9 @@
+# Project repos that bootstrap clones into  <Claude-Memory>/Projects/
+#
+# TO ADD A CODE PROJECT TO YOUR MEMORY SYSTEM: put its git clone URL on its own line below.
+# That's the ONLY place to edit — every machine's bootstrap reads this file, so the next time any
+# machine runs bootstrap (or you re-clone), the new repo comes along. Keeps all your code + its
+# context under one tree that a single clone carries.
+#
+# Lines starting with # and blank lines are ignored. Example:
+#   https://github.com/<your-account>/<your-project>.git

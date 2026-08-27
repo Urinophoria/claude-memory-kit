@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "autoMemoryEnabled": false,
+  "autoDreamEnabled": false,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Edit|Write|NotebookEdit|Bash|PowerShell|Grep",
+        "hooks": [
+          { "type": "command", "shell": "bash", "command": "bash \"$HOME/Claude-Memory/setup/secrets-read-warning.sh\"", "timeout": 10 }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|NotebookEdit",
+        "hooks": [
+          { "type": "command", "shell": "bash", "command": "bash \"$HOME/Claude-Memory/setup/canon-memory-guard.sh\"", "timeout": 10 }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          { "type": "command", "shell": "bash", "command": "bash \"$HOME/Claude-Memory/setup/tool-missing-guard.sh\"", "timeout": 10, "statusMessage": "Checking for a missing tool…" }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "shell": "bash", "command": "bash \"$HOME/Claude-Memory/setup/canon-memory-doctrine.sh\"", "timeout": 10, "statusMessage": "Stating canon memory doctrine…" },
+          { "type": "command", "shell": "bash", "command": "bash \"$HOME/Claude-Memory/setup/atoms-inject.sh\"", "timeout": 10, "statusMessage": "Loading canon atoms (fast-fact layer)…" },
+          { "type": "command", "shell": "bash", "command": "bash \"$HOME/Claude-Memory/setup/check-canon.sh\"", "timeout": 20, "statusMessage": "Checking GitHub canon (pull-first)…" },
+          { "type": "command", "shell": "bash", "command": "bash \"$HOME/Claude-Memory/setup/transcript-autosave.sh\"", "timeout": 90, "statusMessage": "Catching up the session archive…" }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          { "type": "command", "shell": "bash", "command": "bash \"$HOME/Claude-Memory/setup/transcript-autosave.sh\"", "timeout": 90, "statusMessage": "Archiving this session…" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "shell": "bash", "command": "bash \"$HOME/Claude-Memory/setup/session-autosave.sh\"", "timeout": 30, "statusMessage": "Saving session work to canon…" }
+        ]
+      }
+    ]
+  }
+}
