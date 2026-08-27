@@ -89,17 +89,36 @@ for d in "$PROJ"/*/; do
   [ -d "$d" ] || continue; n=$(basename "$d")
   echo "$manifest_names" | grep -qx "$n" || warn "$n: cloned but NOT in manifest — V2 bootstrap wouldn't clone it"
 done
+# Repo-less canon projects: a code/<n>/ with a PROJECT.md but NO repo (a design-record project with no repo yet).
+# The manifest loop above skips these entirely, so they sat outside every consistency check — verify at
+# least that they're indexed in both tables (such projects otherwise sit outside every loop).
+for cdir in "$CODE"/*/; do
+  [ -d "$cdir" ] || continue; n=$(basename "$cdir")
+  [ -f "$cdir/PROJECT.md" ] || continue
+  [ -d "$PROJ/$n/.git" ] && continue                      # a real clone → already covered by [2] above
+  echo "$manifest_names" | grep -qx "$n" && continue      # in the manifest (clone pending) → covered above
+  grep -q "$n" "$MEM/MEMORY.md"  && ok "$n (repo-less): indexed in MEMORY.md"     || warn "$n (repo-less canon project): MISSING from MEMORY.md table"
+  grep -q "$n" "$CODE/INDEX.md"  && ok "$n (repo-less): indexed in code/INDEX.md" || warn "$n (repo-less canon project): MISSING from code/INDEX.md table"
+done
 
 echo ""; echo "[3] Every project repo clean + pushed (no stranded work)"
 for d in "$PROJ"/*/; do [ -d "$d" ] && check_repo_clean_pushed "$d" "$(basename "$d")"; done
 
-echo ""; echo "[4] PROJECT.md freshness vs repo HEAD (drift heuristic — the dashboard lesson)"
+echo ""; echo "[4] PROJECT.md freshness vs last SUBSTANTIVE commit (drift heuristic — the dashboard lesson)"
+# Compare PROJECT.md against the date of the last commit that changed something OTHER than pure
+# housekeeping (.gitignore / README / LICENSE / .gitattributes). Using raw HEAD date instead made a
+# fleet-wide housekeeping commit (e.g. the 2026-08-26 .gitignore baseline) flag 8/9 projects as false
+# DRIFT — a housekeeping commit is not project movement (pass-2 finding). Empty result (a repo with
+# ONLY housekeeping history) falls back to HEAD so a genuinely-new repo still gets checked.
 for d in "$PROJ"/*/; do
   [ -d "$d/.git" ] || continue; n=$(basename "$d"); pf="$CODE/$n/PROJECT.md"
   [ -f "$pf" ] || continue
-  hd=$(git -C "$d" log -1 --format=%cd --date=short 2>/dev/null)
-  if grep -q "$hd" "$pf"; then ok "$n: PROJECT.md references repo HEAD date ($hd)"
-  else note "$n: repo HEAD is $hd but PROJECT.md doesn't mention it — CHECK for drift"; fi
+  hd=$(git -C "$d" log -1 --format=%cd --date=short -- \
+        ':(exclude).gitignore' ':(exclude)README.md' ':(exclude)README.txt' \
+        ':(exclude)LICENSE' ':(exclude).gitattributes' 2>/dev/null)
+  [ -n "$hd" ] || hd=$(git -C "$d" log -1 --format=%cd --date=short 2>/dev/null)
+  if grep -q "$hd" "$pf"; then ok "$n: PROJECT.md references last-substantive date ($hd)"
+  else note "$n: last substantive commit is $hd but PROJECT.md doesn't mention it — CHECK for drift"; fi
 done
 
 echo ""; echo "[4b] PROJECT.md single-source — code/ vs repo CONTENT (the 08-14 dual-home fork lesson)"
@@ -135,25 +154,40 @@ done
 echo ""; echo "[5] Stranded canon — remote branches + worktrees no other check watched (the 08-15 worktree lesson)"
 # WHY: every OTHER check measures only origin/main and the MAIN worktree. Claude Code worktree
 # sessions commit to claude/* branches; the branch reaches origin but if the session ends without a
-# merge it never lands on main — and dr-check reported GREEN while a whole project (eyes-v2) + a
-# 313-line district runbook sat stranded on two such branches for ~12 days (2026-08-24 sweep, #1
-# critical; recovered + merged 2026-08-26). So: FAIL on any remote branch carrying commits
+# merge it never lands on main — and dr-check would report GREEN while a whole project + a
+# long doc sat stranded on such a branch for days —
+# so: FAIL on any remote branch carrying commits
 # unreachable from the default branch (that IS canon a V2 clone of main would miss), and NOTE any
 # extra registered worktree (a stale checkout is a stale-truth trap for recursive tools that ignore
-# .git/info/exclude). Refs are already fresh from [1]'s fetch — no extra network needed.
-any_stranded=0
-while IFS= read -r br; do
-  [ -n "$br" ] || continue
-  case "$br" in */HEAD) continue;; esac
-  cnt=$(git -C "$MEM" rev-list --count "origin/main..${br}" 2>/dev/null || echo 0)
-  if [ "${cnt:-0}" -gt 0 ] 2>/dev/null; then
-    warn "STRANDED: ${br} has ${cnt} commit(s) NOT on origin/main — a V2 rebuild of main would MISS them. Merge to main (or delete the branch). If it's an in-flight PR branch, that's expected — confirm with 'gh pr list'."
-    any_stranded=1
-  fi
-done <<EOF
-$(git -C "$MEM" for-each-ref --format='%(refname:short)' refs/remotes/origin 2>/dev/null | grep -v '^origin/main$')
-EOF
-[ "$any_stranded" -eq 0 ] && ok "Claude-Memory: no stranded remote branches — every origin branch is reachable from origin/main"
+# .git/info/exclude). Refs are already fresh from the fetch in [1] — no extra network needed.
+# check one repo's remote branches for commits unreachable from its default branch.
+# sevfn = warn (canon: an unmerged branch IS stranded canon) or note (a project repo: an unmerged
+# branch is often a legit in-flight feature/PR, so advise rather than FAIL — pass-2 extended [5] to
+# project remotes but they must not turn the doctor red on normal feature-branch development).
+check_stranded() {
+  local dir="$1" label="$2" def="$3" sevfn="$4" any=0 br cnt
+  while IFS= read -r br; do
+    [ -n "$br" ] || continue
+    case "$br" in "origin"|*/HEAD) continue;; esac   # skip the bare origin/HEAD symbolic ref (pass-2 [5] fix)
+    cnt=$(git -C "$dir" rev-list --count "origin/${def}..${br}" 2>/dev/null || echo 0)
+    if [ "${cnt:-0}" -gt 0 ] 2>/dev/null; then
+      "$sevfn" "STRANDED: ${label}:${br} has ${cnt} commit(s) NOT on origin/${def} — a V2 clone of the default branch would MISS them. Merge or delete the branch (in-flight PR? confirm with 'gh pr list')."
+      any=1
+    fi
+  done <<INNER
+$(git -C "$dir" for-each-ref --format='%(refname:short)' refs/remotes/origin 2>/dev/null | grep -v "^origin/${def}\$")
+INNER
+  [ "$any" -eq 0 ] && ok "${label}: no stranded remote branches (all reachable from origin/${def})"
+}
+check_stranded "$MEM" "Claude-Memory" "main" warn
+# extend to every project remote — a stranded claude/* worktree branch can hide there too (pass-2)
+for pd in "$PROJ"/*/; do
+  [ -d "$pd/.git" ] || continue; pn=$(basename "$pd")
+  pdef=$(git -C "$pd" symbolic-ref --short -q refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')
+  [ -n "$pdef" ] || pdef=$(git -C "$pd" branch --show-current 2>/dev/null)
+  [ -n "$pdef" ] || pdef=main
+  check_stranded "$pd" "$pn" "$pdef" note
+done
 wt_total=$(git -C "$MEM" worktree list 2>/dev/null | grep -c .)
 if [ "${wt_total:-1}" -gt 1 ]; then
   while IFS= read -r line; do
