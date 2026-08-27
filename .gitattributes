@@ -1,0 +1,9 @@
+# Keep line endings sane. Shell scripts + Python MUST be LF — CRLF breaks bash hooks (a stray \r in
+# the shebang/commands) and is why this file exists. Text is normalized to LF in the repo; Windows
+# tools still read it fine.
+* text=auto eol=lf
+*.sh   text eol=lf
+*.py   text eol=lf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+*.jsonl text eol=lf
