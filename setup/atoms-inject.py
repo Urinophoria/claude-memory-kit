@@ -26,7 +26,9 @@ HEADER = (
     "(the `src` field names the source file for each group) -- for any OTHER topic, still read its "
     ".md. Each "
     "group header is the source file; open it for full depth (the .md is source of truth, the atom "
-    "is a distilled pointer). Markers: (~) medium confidence, (?) low; (open)/(resolved) = status."
+    "is a distilled pointer). Markers: (~) medium confidence, (?) low; (open)/(resolved) = status. "
+    "STATUS VOCAB = open|resolved|superseded ONLY (superseded is dropped); when you WRITE an atom "
+    "use only those three -- any other value injects flagged as (off-vocab status: X)."
 )
 
 
@@ -74,8 +76,18 @@ def main():
             conf = atom.get("conf")
             prefix = "~ " if conf == "med" else ("? " if conf == "low" else "")
             status = atom.get("status")
-            suffix = " (open)" if status == "open" else (
-                " (resolved)" if status == "resolved" else "")
+            # open/resolved show a suffix; a plain fact (no status) shows none; ANY other value is
+            # off-vocab (the vocabulary is open|resolved|superseded only -- superseded is filtered
+            # above) and still injects but is FLAGGED, so a bad status word can never read as a
+            # settled, neutral fact.
+            if status == "open":
+                suffix = " (open)"
+            elif status == "resolved":
+                suffix = " (resolved)"
+            elif status:
+                suffix = " (! off-vocab status: %s)" % status
+            else:
+                suffix = ""
             lines.append("- %s%s%s" % (prefix, atom.get("claim", ""), suffix))
         parts.append("\n".join(lines))
         parts.append("")

@@ -12,7 +12,20 @@ description: >
 
 Persistent memory for the user, git-managed at `~/Claude-Memory`. Works in Claude Code and Cowork.
 
-## 🛑 Two hard rules
+## 🛑 Three hard rules
+
+### 0. Am I current? — served-skill staleness self-check (do this FIRST)
+> **SKILL_VERSION = 2026-08-27**  ← the date this served copy was packaged. Auto-stamped by
+> `setup/package-skills.ps1`; do not hand-edit the date.
+
+Cowork and claude.ai serve an **uploaded snapshot** of this skill, not the live repo file — so a served
+copy silently lags the repo until it is re-packaged and re-uploaded (STANDARDS §7A). A stale copy runs
+**old doctrine over fresh data**, a subtle and recurring failure. **So, before anything else:** read
+`setup/skill-registry.md` and find the canonical `load-memory` date (the `| load-memory | <DATE> |` row).
+If that date is **NEWER than SKILL_VERSION above**, THIS SERVED COPY IS STALE — say so to the user:
+*"⚠ load-memory served copy is stale (this build = <SKILL_VERSION>, canon = <registry date>) — re-run
+`package-skills` on a pulled clone, then re-upload via Customize → Skills."* Load memory anyway, but flag
+that recent doctrine may be missing. (No shell / can't read the registry? Still state SKILL_VERSION out loud.)
 
 ### 1. You are not the only Claude running
 Sessions on the same account are NOT aware of each other and can edit the same files with no locking.

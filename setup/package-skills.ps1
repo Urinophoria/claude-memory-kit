@@ -27,6 +27,22 @@ if (-not (Test-Path $skillsRoot)) {
     exit 1
 }
 
+# FRESHNESS GUARD -- never package from a clone that is BEHIND origin. This is how a *correct* re-upload
+# can still serve a STALE skill: this script zips whatever the LOCAL clone holds, so running it on a box
+# whose clone was behind origin ships the OLD SKILL.md. Fetch + refuse.
+Step "Freshness check (clone must be current before packaging)"
+$behind = $null
+try { git -C $claudeMemory fetch -q origin 2>$null; $behind = (git -C $claudeMemory rev-list --count "HEAD..origin/main" 2>$null | Select-Object -First 1) } catch {}
+if ($behind -and ([int]$behind) -gt 0) {
+    Write-Host "    FAIL: clone is $behind commit(s) BEHIND origin/main -- packaging would ship a STALE skill." -ForegroundColor Red
+    Write-Host "          Run:  git -C `"$claudeMemory`" pull --rebase   then re-run this." -ForegroundColor Red
+    exit 1
+} elseif ($behind -eq "0") {
+    OK "clone current with origin/main (0 behind)"
+} else {
+    Write-Host "    WARN: could not verify clone freshness (git fetch failed / offline / not a repo). Make sure you pulled recently." -ForegroundColor Yellow
+}
+
 $excludeDirs  = @("__pycache__", ".git")
 $excludeFiles = @("*.pyc", "*.pyo", "*.zip", "*.skill", ".sync-log", ".sync-queue", ".DS_Store", "Thumbs.db")
 
@@ -50,6 +66,19 @@ Get-ChildItem $skillsRoot -Directory | ForEach-Object {
     Copy-Item "$($skillDir.FullName)\*" $stage -Recurse -Force
     foreach ($d in $excludeDirs)  { Get-ChildItem $stage -Recurse -Directory -Filter $d -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force }
     foreach ($f in $excludeFiles) { Get-ChildItem $stage -Recurse -File -Filter $f -ErrorAction SilentlyContinue | Remove-Item -Force }
+
+    # AUTO-STAMP SKILL_VERSION = the date this skill's SKILL.md last changed, so the served copy
+    # self-reports its age (the boot staleness self-check compares it to setup\skill-registry.md). Only
+    # skills carrying a `SKILL_VERSION = <date>` line are touched. Write UTF-8 no-BOM (a BOM corrupts YAML).
+    $skillMd = Join-Path $stage "SKILL.md"
+    if (Test-Path $skillMd) {
+        $verDate = (git -C $claudeMemory log -1 --format=%cd --date=short -- "skills/$skillName/SKILL.md" 2>$null | Select-Object -First 1)
+        if ($verDate) {
+            $orig = Get-Content $skillMd -Raw
+            $stamped = [regex]::Replace($orig, '(SKILL_VERSION = )\d{4}-\d{2}-\d{2}', "`${1}$verDate")
+            if ($stamped -ne $orig) { [System.IO.File]::WriteAllText($skillMd, $stamped); OK "stamped $skillName SKILL_VERSION = $verDate" }
+        }
+    }
 
     # Build with FORWARD-SLASH entry names (see header)
     $zipPath = Join-Path $zipOut "$skillName.zip"
