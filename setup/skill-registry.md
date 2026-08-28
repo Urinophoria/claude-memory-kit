@@ -7,6 +7,24 @@ keeps serving a months-old snapshot. This registry tracks which build each machi
 is visible. `load-memory`'s **STEP 0 self-check** compares its stamped `SKILL_VERSION` to the canonical
 date below and warns if the served copy is behind.
 
+## 🧩 Prerequisites — what a skill needs to actually WORK (per product)
+
+A skill can be uploaded correctly and *still* not work if the session lacks what it depends on. Declare
+prerequisites so a missing one is a clear "add X", not a mystery failure. `load-memory`'s **STEP 0.5 preflight**
+checks these live and reports the one concrete fix.
+
+| Product | Can commit/push? | Prerequisite | Notes |
+|---|---|---|---|
+| **Claude Code** | ✅ native shell | — | full shell; commits + pushes normally. |
+| **Cowork** | ⛔ only with a shell connector | **a shell connector (e.g. Desktop Commander)** | Without one, Cowork can READ + PROPOSE but **cannot commit**. WITH one, it runs `git` + commits + pushes like Claude Code. |
+
+Plus on every box: **git** + the cloned repo at `~/Claude-Memory` (else run bootstrap), and a working
+**Python** — `py -3` on Windows (**never** bare `python`/`python3` — the WindowsApps stub hangs).
+
+> ⚠️ A `SKILL.md` has no app-enforced "auto-install this connector" hook — connectors are enabled by the user
+> in the app. So the reliable lever is **declare + preflight** (this table + STEP 0.5), which turns a silent
+> failure into a clear "add a shell connector."
+
 ## The rule (STANDARDS §7A)
 
 Editing a `skills/<name>/SKILL.md` is not "done" until it is **re-packaged** and **re-uploaded** on the
@@ -21,7 +39,7 @@ is older than the canonical date below.
 
 | Skill | SKILL.md last changed | Notes |
 |---|---|---|
-| `load-memory` | **2026-08-27** | Boot sequence: awareness via the indexes + deep-read on demand; STEP 0 served-copy staleness self-check + `SKILL_VERSION` stamp. |
+| `load-memory` | **2026-08-28** | Boot sequence: awareness via the indexes + deep-read on demand; STEP 0 served-copy staleness self-check + `SKILL_VERSION` stamp; STEP 0.5 prerequisites preflight (shell connector / git+repo / `py -3`). |
 
 ## Upload log (each machine signs its own row — never infer another's)
 

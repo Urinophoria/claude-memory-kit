@@ -12,10 +12,10 @@ description: >
 
 Persistent memory for the user, git-managed at `~/Claude-Memory`. Works in Claude Code and Cowork.
 
-## 🛑 Three hard rules
+## 🛑 Boot preflight (0, 0.5), then the hard rules
 
 ### 0. Am I current? — served-skill staleness self-check (do this FIRST)
-> **SKILL_VERSION = 2026-08-27**  ← the date this served copy was packaged. Auto-stamped by
+> **SKILL_VERSION = 2026-08-28**  ← the date this served copy was packaged. Auto-stamped by
 > `setup/package-skills.ps1`; do not hand-edit the date.
 
 Cowork and claude.ai serve an **uploaded snapshot** of this skill, not the live repo file — so a served
@@ -26,6 +26,19 @@ If that date is **NEWER than SKILL_VERSION above**, THIS SERVED COPY IS STALE �
 *"⚠ load-memory served copy is stale (this build = <SKILL_VERSION>, canon = <registry date>) — re-run
 `package-skills` on a pulled clone, then re-upload via Customize → Skills."* Load memory anyway, but flag
 that recent doctrine may be missing. (No shell / can't read the registry? Still state SKILL_VERSION out loud.)
+
+### 0.5 Preflight — do I have the PREREQUISITES this skill needs? (declare + check + remediate)
+This skill READS memory and WRITES to it (commit + push). Reading needs the repo; writing needs a **shell**.
+Check these up front and, if one is missing, tell the user the **one concrete fix** — never fail silently.
+
+| Prerequisite | Why | Check | If missing → tell the user |
+|---|---|---|---|
+| **A shell** (to commit/push) | a write reaches the repo only as a *pushed commit* | can you run `git -C ~/Claude-Memory status`? | **Claude Code has one natively. Cowork has one ONLY if a shell connector (e.g. Desktop Commander) is enabled** → *"add a shell connector (Customize → Connectors), then reload."* Without it you can READ + PROPOSE, but every write must end *"uncommitted — needs a shell session to reach the repo."* See `setup/skill-registry.md` → Prerequisites. |
+| **git + the repo** at `~/Claude-Memory` | the transport | `git -C ~/Claude-Memory rev-parse` succeeds | repo absent = fresh box → run bootstrap first, then retry. |
+| **A working Python** | the memory tooling (atoms / dr-check / render) | `py -3 -V` (Windows) or `python3 -V` | on Windows **never bare `python`/`python3` — the WindowsApps stub hangs; use `py -3`.** Missing → tooling degraded; say so. |
+
+**State the preflight result in your context tag** (shell yes/no) so the user catches a missing prerequisite
+in the first response instead of after a wasted round-trip.
 
 ### 1. You are not the only Claude running
 Sessions on the same account are NOT aware of each other and can edit the same files with no locking.
