@@ -81,27 +81,32 @@ fi
 # session boundary through transcript-autosave (which scans first).
 git -C "${REPO}" add -A -- ':(exclude)transcripts/rendered'
 
-# ── ATOMS WRITE-PATH GATE ──────────────────────────────────────────────────────────────────────
-# atoms-lint is otherwise only a MANUAL doctor (dr-check), so a malformed / duplicate-id / off-vocab
-# atom would ride THIS auto-push to every machine before anything validates it. If memory/atoms.jsonl is
-# staged and FAILS lint, hold JUST that file back (unstage) so the bad atom never leaves this box, and
-# drop a marker check-canon announces; the rest of the tree still commits. atoms.jsonl is tracked and
-# restores byte-identical, so holding it back never risks canon. Fail-OPEN only if no Python is resolvable.
+# ── ATOMS: WRITE-PATH GATE (F-A) + PATH-SCOPED COMMIT (F-E) ─────────────────────────────────────
+# F-A: atoms-lint is otherwise only a MANUAL doctor (dr-check), so a malformed / duplicate-id / off-vocab /
+#   secret-inlining atom would ride THIS auto-push to every machine before anything validates it. If
+#   memory/atoms.jsonl is staged and FAILS lint, hold JUST that file back; the rest of the tree still commits.
+# F-E: if it PASSES (or can't be linted — no python), commit atoms.jsonl in its OWN path-scoped commit,
+#   isolated from the .md bundle, so a `git revert` of a bad atom can never cross into a source .md. Both are
+#   contained to the atoms layer (atoms.jsonl is tracked, restores byte-identical → never risks the repo).
+ATOMSCOMMITTED=""
 [ -n "$(git -C "${REPO}" status --porcelain -- memory/atoms.jsonl 2>/dev/null)" ] || rm -f "${ATOMSMARK}"
 if git -C "${REPO}" diff --cached --name-only -- memory/atoms.jsonl | grep -q .; then
   APY=""
   for c in "py -3" python3 python; do
     if $c -c "import sys" >/dev/null 2>&1; then APY="$c"; break; fi
   done
-  if [ -n "${APY}" ]; then
-    if $APY "${REPO}/setup/atoms-lint.py" "${REPO}/memory/atoms.jsonl" >/dev/null 2>&1; then
-      rm -f "${ATOMSMARK}"
-    else
-      git -C "${REPO}" restore --staged -- memory/atoms.jsonl 2>/dev/null \
-        || git -C "${REPO}" reset -q HEAD -- memory/atoms.jsonl
-      printf 'atoms-lint FAILED %s — memory/atoms.jsonl HELD BACK from commit/push (a bad atom must not reach other machines). Fix it: `py -3 setup/atoms-lint.py`, then it commits normally. The REST of your work committed fine.\n' \
-        "$(date '+%Y-%m-%d %H:%M')" > "${ATOMSMARK}"
-      echo "session-autosave: atoms.jsonl FAILED atoms-lint — held back from the push (rest committed). See ~/Claude-Memory/.git/atoms-lint-FAILED." >&2
+  if [ -n "${APY}" ] && ! $APY "${REPO}/setup/atoms-lint.py" "${REPO}/memory/atoms.jsonl" >/dev/null 2>&1; then
+    # F-A: bad atom — hold it back from commit/push, drop a marker (rest of the tree still commits below).
+    git -C "${REPO}" restore --staged -- memory/atoms.jsonl 2>/dev/null \
+      || git -C "${REPO}" reset -q HEAD -- memory/atoms.jsonl
+    printf 'atoms-lint FAILED %s — memory/atoms.jsonl HELD BACK from commit/push (a bad atom must not reach other machines). Fix it: `py -3 setup/atoms-lint.py`, then it commits normally. The REST of your work committed fine.\n' \
+      "$(date '+%Y-%m-%d %H:%M')" > "${ATOMSMARK}"
+    echo "session-autosave: atoms.jsonl FAILED atoms-lint — held back from the push (rest committed). See ~/Claude-Memory/.git/atoms-lint-FAILED." >&2
+  else
+    # F-E: clean (or unlintable) → commit atoms.jsonl ALONE (pathspec = revert-isolated from any .md).
+    rm -f "${ATOMSMARK}"
+    if git -C "${REPO}" commit -q -m "atoms: fast-fact autosave $(date '+%Y-%m-%d %H:%M') (path-scoped, revert-isolated — F-E)" -- memory/atoms.jsonl 2>/dev/null; then
+      ATOMSCOMMITTED=1
     fi
   fi
 fi
@@ -113,6 +118,9 @@ fi
 # of the very marker the fail-loud path exists for.)
 if git -C "${REPO}" diff --cached --quiet; then
   rm -f "${HINT}" "${FAILMARK}"
+  # If only atoms changed, the F-E path-scoped commit above still needs to ship (the main push below is
+  # skipped because we exit here). No-op if nothing is actually ahead.
+  [ -n "${ATOMSCOMMITTED}" ] && git -C "${REPO}" push -q origin main 2>/dev/null
   exit 0
 fi
 

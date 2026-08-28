@@ -39,6 +39,22 @@ DATE_RE = re.compile(r"^20\d\d-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$")
 CONF_OK = {"high", "med", "low"}
 STATUS_OK = {"open", "resolved", "superseded"}
 
+# Reuse the redaction scanner's CALIBRATED secret detection so a credential VALUE inlined into an atom can
+# never ride the SessionStart injection or auto-push into git history (durable on every clone). Import
+# scan_text from the redaction module — ONE source of truth for "what is a secret". Degrade LOUDLY if it
+# can't load. scan_text returns hits whose context is ALREADY masked, so reporting it can't re-leak.
+_scan_text = None
+_scan_err = ""
+try:
+    import importlib.util
+    _rs_path = os.path.join(REPO, "transcripts", "render-session.py")
+    _spec = importlib.util.spec_from_file_location("_render_session", _rs_path)
+    _rs = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_rs)
+    _scan_text = _rs.scan_text
+except Exception as e:  # pragma: no cover - defensive
+    _scan_err = str(e)
+
 fail = []      # hard failures
 note = []      # advisory
 
@@ -55,6 +71,10 @@ def main():
     if not os.path.isfile(ATOMS):
         print("  atoms-lint: no memory/atoms.jsonl (nothing to check)")
         return 0
+
+    if _scan_err:
+        warn(f"secret-shape scan SKIPPED -- could not load the redaction scanner ({_scan_err[:80]}); "
+             f"atoms are NOT checked for inlined credentials this run")
 
     atoms, ids = [], []
     # utf-8-sig strips a stray BOM so we can report it rather than silently dropping line 1
@@ -108,6 +128,14 @@ def main():
         # the README just prefers single quotes to avoid escaping mistakes. Advisory nudge, not a failure.
         if isinstance(a.get("claim"), str) and '"' in a["claim"]:
             warn(f"{aid}: claim has a double-quote -- valid, but README prefers single quotes (avoids escaping slips)")
+        # HARD-fail an atom whose claim inlines a real credential VALUE. Only 'hot' hits count; prose and
+        # placeholders are not hot. The context is masked by scan_text, so it never re-leaks.
+        if _scan_text and isinstance(a.get("claim"), str):
+            hits, _ = _scan_text(a["claim"])
+            for (_ln, nm, ctx, is_hot) in hits:
+                if is_hot:
+                    hard(f"{aid}: claim appears to INLINE A SECRET ({nm}) -- move the value to a gitignored "
+                         f"secrets file and reference it by NAME, never inline it. Masked context: {ctx}")
 
     # duplicate ids (the headline rule)
     for k, c in Counter(ids).items():
