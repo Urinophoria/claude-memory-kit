@@ -30,6 +30,7 @@ REPO="${HOME}/Claude-Memory"
 HINT="${REPO}/.git/autosave-msg"
 FAILMARK="${REPO}/.git/autosave-FAILED"
 HELDMARK="${REPO}/.git/autosave-HELD"
+ATOMSMARK="${REPO}/.git/atoms-lint-FAILED"
 [ -d "${REPO}/.git" ] || exit 0
 
 # ── SAFETY BAILOUT (2026-08-26, T1 of the memory-system sweep) ────────────────────────────────
@@ -61,7 +62,7 @@ rm -f "${HELDMARK}"
 
 # Clean? Then discipline already handled it — drop any stale hint/marker and stay invisible.
 if [ -z "$(git -C "${REPO}" status --porcelain)" ]; then
-  rm -f "${HINT}" "${FAILMARK}"
+  rm -f "${HINT}" "${FAILMARK}" "${ATOMSMARK}"
   exit 0
 fi
 
@@ -79,6 +80,31 @@ fi
 # secret-exposure critical. So the Stop-hook backstop never touches rendered/; it lands at the next
 # session boundary through transcript-autosave (which scans first).
 git -C "${REPO}" add -A -- ':(exclude)transcripts/rendered'
+
+# ── ATOMS WRITE-PATH GATE ──────────────────────────────────────────────────────────────────────
+# atoms-lint is otherwise only a MANUAL doctor (dr-check), so a malformed / duplicate-id / off-vocab
+# atom would ride THIS auto-push to every machine before anything validates it. If memory/atoms.jsonl is
+# staged and FAILS lint, hold JUST that file back (unstage) so the bad atom never leaves this box, and
+# drop a marker check-canon announces; the rest of the tree still commits. atoms.jsonl is tracked and
+# restores byte-identical, so holding it back never risks canon. Fail-OPEN only if no Python is resolvable.
+[ -n "$(git -C "${REPO}" status --porcelain -- memory/atoms.jsonl 2>/dev/null)" ] || rm -f "${ATOMSMARK}"
+if git -C "${REPO}" diff --cached --name-only -- memory/atoms.jsonl | grep -q .; then
+  APY=""
+  for c in "py -3" python3 python; do
+    if $c -c "import sys" >/dev/null 2>&1; then APY="$c"; break; fi
+  done
+  if [ -n "${APY}" ]; then
+    if $APY "${REPO}/setup/atoms-lint.py" "${REPO}/memory/atoms.jsonl" >/dev/null 2>&1; then
+      rm -f "${ATOMSMARK}"
+    else
+      git -C "${REPO}" restore --staged -- memory/atoms.jsonl 2>/dev/null \
+        || git -C "${REPO}" reset -q HEAD -- memory/atoms.jsonl
+      printf 'atoms-lint FAILED %s — memory/atoms.jsonl HELD BACK from commit/push (a bad atom must not reach other machines). Fix it: `py -3 setup/atoms-lint.py`, then it commits normally. The REST of your work committed fine.\n' \
+        "$(date '+%Y-%m-%d %H:%M')" > "${ATOMSMARK}"
+      echo "session-autosave: atoms.jsonl FAILED atoms-lint — held back from the push (rest committed). See ~/Claude-Memory/.git/atoms-lint-FAILED." >&2
+    fi
+  fi
+fi
 
 # Nothing actually staged? Then this was a no-op (only rendered/ was dirty, or a CRLF renormalization
 # left the tree phantom-dirty). That is a clean-equivalent, NOT a backstop failure — clear any

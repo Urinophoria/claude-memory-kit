@@ -20,6 +20,7 @@
 REPO="${HOME}/Claude-Memory"
 FAILMARK="${REPO}/.git/autosave-FAILED"
 HELDMARK="${REPO}/.git/autosave-HELD"
+ATOMSMARK="${REPO}/.git/atoms-lint-FAILED"
 [ -d "${REPO}/.git" ] || exit 0
 
 # Freshness vs origin. If fetch FAILS, say so loudly (don't fall silent) and still judge against
@@ -58,9 +59,18 @@ if [ -f "${HELDMARK}" ]; then
   heldmsg="AUTOSAVE HELD on this box — a previous session bailed mid-operation: ${hreason}. FINISH the rebase/merge (or 'git rebase --abort'), then commit — uncommitted work here is not backed up yet. Clears automatically once the repo is back to a normal state."
 fi
 
+# ATOMS marker: a previous Stop autosave held memory/atoms.jsonl back because it FAILED atoms-lint (the
+# write-path gate — a bad atom must not auto-push). The rest of that session's work DID commit; only the
+# atoms file is stranded, dirty, until the bad atom is fixed.
+atomsmsg=""
+if [ -f "${ATOMSMARK}" ]; then
+  areason=$(tr -d '\r\n"\\' < "${ATOMSMARK}" 2>/dev/null | cut -c1-300)
+  atomsmsg="ATOMS HELD on this box — memory/atoms.jsonl failed atoms-lint and was held back from the push: ${areason}. Fix it (py -3 setup/atoms-lint.py) and commit atoms.jsonl. Does NOT affect the rest of canon — only the atoms fast-fact layer. Clears on the next clean autosave."
+fi
+
 # Assemble (fetch-failure, then freshness, then markers) into one additionalContext string.
 msg=""
-for p in "${fetchmsg}" "${freshmsg}" "${markmsg}" "${heldmsg}"; do
+for p in "${fetchmsg}" "${freshmsg}" "${markmsg}" "${heldmsg}" "${atomsmsg}"; do
   [ -n "$p" ] || continue
   if [ -z "$msg" ]; then msg="$p"; else msg="${msg}  ||  ${p}"; fi
 done

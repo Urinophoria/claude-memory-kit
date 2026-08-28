@@ -32,6 +32,12 @@ stale() { echo "  ⤓ $1"; STALE=$((STALE+1)); }
 # certified 'canon is whole' on a fetch failure).
 UNVERIFIED=0
 unverified() { echo "  ⚠ $1"; UNVERIFIED=$((UNVERIFIED+1)); }
+# ATOMS = the fast-fact layer's integrity lint failed. Kept DISTINCT from FAIL on purpose: atoms.jsonl is
+# git-tracked and restores byte-identical, so a bad atom does NOT threaten a lossless rebuild — routing it
+# through FAIL would wrongly flip the losslessness verdict RED over a cosmetic typo. So atoms lint failure is
+# a LOUD ADVISORY that never sets FAIL and never gates the exit code; the commit-time write-path gate
+# (session-autosave.sh) is what actually stops a bad atom from reaching other machines.
+ATOMS=0
 
 echo "===================================================================="
 echo " DR DOCTOR — would a fresh-machine rebuild be seamless?"
@@ -226,12 +232,14 @@ for sk in "$MEM"/skills/*/SKILL.md; do
 done
 
 echo ""; echo "[7] Atoms integrity (HARD — duplicates / dangling refs / malformed break the fast-fact layer)"
-# Enforces the atoms.README 'never reuse an id' rule + catches a dangling cross-reference (canon points
+# Enforces the atoms.README 'never reuse an id' rule + catches a dangling cross-reference (memory points
 # at an atom that doesn't exist) and any corruption that would silently degrade the SessionStart layer.
-# The 08-26 audit found 4 dup ids + a dangling wr-27 with nothing guarding it; this is that guard.
 if [ -n "${apy:-}" ]; then
   if ! "$apy" "$MEM/setup/atoms-lint.py"; then
-    warn "atoms.jsonl FAILED integrity lint (see [7] above) — the fast-fact layer is compromised; fix before trusting it"
+    echo "  ⚠ atoms.jsonl FAILED integrity lint (detail above) — FIX memory/atoms.jsonl. ADVISORY ONLY: this does"
+    echo "    NOT threaten a lossless rebuild (atoms.jsonl is git-tracked, restores byte-identical); it does not"
+    echo "    flip the verdict below. The session-autosave write-path gate already holds a bad atom back."
+    ATOMS=$((ATOMS+1))
   fi
 else
   note "atoms lint skipped — no working python interpreter"
@@ -256,6 +264,9 @@ elif [ "$STALE" -gt 0 ]; then
 else
   echo " ✅ GREEN — a V2 rebuild would be lossless. Every project resumes from canon."
 fi
+[ "$ATOMS" -gt 0 ] && echo " ⚠ ATOMS: integrity lint is FAILING — advisory, SEPARATE from losslessness above (atoms.jsonl is
+    tracked → a rebuild still restores it byte-identical). Fix memory/atoms.jsonl; the commit-time gate already
+    holds a bad atom back. This does not change the GREEN/FAIL verdict or the exit code."
 echo " (? lines are advisory drift-heuristics, not hard failures — eyeball them."
 echo "  ⚠️ a ⤓ stale repo can FAKE a ? drift line: PROJECT.md looks ahead of a HEAD you"
 echo "  simply haven't pulled yet. Clear ⤓ first, then judge ?.)"
