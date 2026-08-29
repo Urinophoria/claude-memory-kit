@@ -67,6 +67,55 @@ def resolve_src(src):
             return True
     return False
 
+# --- src-CONTAINMENT (provenance drift) ----------------------------------------------------------
+# The src check above only proves the file EXISTS. An atom is a distilled POINTER; if its source file never
+# contained the fact, the pointer is broken (provenance decay). This heuristic flags an atom that shares
+# almost NONE of its distinctive terms with its source. ADVISORY only: a distillation never matches its
+# source verbatim, so a hard-fail would false-positive and (via the session-autosave gate) block legit
+# commits. Deliberately conservative — flags only when an atom has >= MIN_TERMS distinctive terms AND under
+# THRESHOLD of them appear in the source.
+_STOP = frozenset("""
+the a an and or of to in on at for with from by is are was were be been being it its this that these those
+you your we our they them he she his her not no yes as if then than so but out up off over under into onto
+session memory atom atoms fact status src open resolved when where what which who how why user
+new now here there also only just still per via etc use used uses using make made makes set sets get gets
+run runs ran one two all any each both same next need needs first last work works project file files
+""".split())
+_TERM_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_./\-]{2,}")
+CONTAIN_MIN_TERMS = 4     # need enough distinctive terms to judge
+CONTAIN_THRESHOLD = 0.30  # flag if under 30% of them appear in the source
+_src_cache = {}
+
+def distinctive_terms(claim):
+    """Specific, searchable tokens from a claim — identifiers, paths, versions, proper nouns — not prose."""
+    terms = set()
+    for tok in _TERM_RE.findall(claim):
+        t = tok.strip("._-/")
+        low = t.lower()
+        if len(t) < 4 or low in _STOP:
+            continue
+        has_digit = any(c.isdigit() for c in t)
+        has_sep = any(c in "_./" for c in t)
+        internal_caps = any(c.isupper() for c in t[1:])
+        allcaps = t.isupper() and len(t) >= 3
+        cap_word = t[0].isupper() and len(t) >= 5
+        if has_digit or has_sep or internal_caps or allcaps or cap_word:
+            terms.add(low)
+    return terms
+
+def src_text(src):
+    if src not in _src_cache:
+        _src_cache[src] = None
+        for rel in (("memory", src + ".md"), ("code", src, "PROJECT.md")):
+            p = os.path.join(REPO, *rel)
+            if os.path.exists(p):
+                try:
+                    _src_cache[src] = open(p, encoding="utf-8", errors="replace").read().lower()
+                except OSError:
+                    pass
+                break
+    return _src_cache[src]
+
 def main():
     if not os.path.isfile(ATOMS):
         print("  atoms-lint: no memory/atoms.jsonl (nothing to check)")
@@ -142,6 +191,22 @@ def main():
         if c > 1:
             lines = [str(n) for n, a in atoms if a.get("id") == k]
             hard(f"DUPLICATE id '{k}' used {c}x (lines {', '.join(lines)}) -- ids are permanent handles, never reuse")
+
+    # src-containment advisory (provenance drift — see distinctive_terms/src_text above)
+    for n, a in atoms:
+        src = a.get("src"); claim = a.get("claim"); aid = a.get("id", f"<line {n}>")
+        if not (src and isinstance(claim, str)) or a.get("status") == "superseded":
+            continue
+        terms = distinctive_terms(claim)
+        if len(terms) < CONTAIN_MIN_TERMS:
+            continue
+        txt = src_text(src)
+        if not txt:
+            continue
+        hit = sum(1 for t in terms if t in txt)
+        if hit / len(terms) < CONTAIN_THRESHOLD:
+            warn(f"{aid}: src '{src}' resolves but holds only {hit}/{len(terms)} of the atom's distinctive terms "
+                 f"— likely PROVENANCE drift (fact not written into its source). Re-point src, or backfill the source.")
 
     # numbering gaps (advisory)
     byp = defaultdict(list)
