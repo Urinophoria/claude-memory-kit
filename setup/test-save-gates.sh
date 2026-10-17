@@ -55,8 +55,11 @@ git remote set-url --push origin "${BARE}"
 [ "$(git remote get-url --push origin)" = "${BARE}" ] || { echo "ABORT: push URL not pinned to the scratch bare"; exit 1; }
 git config user.name "Save-Gates Test"; git config user.email "save-gates@example.invalid"; git config core.longpaths true
 
+# transcripts/render-session.py is a candidate too: transcript-autosave's fail-closed scan runs it, so testing
+# HEAD's copy instead of the working tree's hid a scanner false positive (the 10-08..10-17 archive stall) as
+# one "pre-existing" T14 failure, and later made spawn-checkpoint's new commit check look broken.
 for f in setup/session-autosave.sh setup/atoms-lint.py setup/check-canon.sh setup/transcript-autosave.sh setup/canon-save.sh \
-         setup/spawn-checkpoint.sh setup/spawn-guard.sh; do
+         setup/spawn-checkpoint.sh setup/spawn-guard.sh transcripts/render-session.py; do
   [ -f "${SRC}/${f}" ] && cp "${SRC}/${f}" "${R}/${f}"
 done
 printf '# zz-gates-src (test-save-gates fixture)\nSynthetic source file for the tst atoms.\n' > memory/zz-gates-src.md

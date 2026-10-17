@@ -17,6 +17,14 @@ $ErrorActionPreference = "Stop"
 function Step($m){ Write-Host "`n==> $m" -ForegroundColor Cyan }
 function OK($m){   Write-Host "    OK: $m" -ForegroundColor Green }
 function Skip($m){ Write-Host "    skip: $m" -ForegroundColor DarkGray }
+# Invoke-Quiet: native command with stderr NON-fatal. Under Stop, PS 5.1 makes ANY stderr redirect of a
+# native command (2>$null too, not just 2>&1) a terminating NativeCommandError (see STANDARDS). Local
+# SilentlyContinue, restored in finally. Read $LASTEXITCODE afterwards.
+function Invoke-Quiet([scriptblock]$Command) {
+    $eapOld = $ErrorActionPreference
+    $ErrorActionPreference = 'SilentlyContinue'
+    try { & $Command 2>$null } finally { $ErrorActionPreference = $eapOld }
+}
 
 $claudeMemory = Join-Path $env:USERPROFILE "Claude-Memory"
 $skillsRoot   = Join-Path $claudeMemory "skills"
@@ -32,7 +40,14 @@ if (-not (Test-Path $skillsRoot)) {
 # whose clone was behind origin ships the OLD SKILL.md. Fetch + refuse.
 Step "Freshness check (clone must be current before packaging)"
 $behind = $null
-try { git -C $claudeMemory fetch -q origin 2>$null; $behind = (git -C $claudeMemory rev-list --count "HEAD..origin/main" 2>$null | Select-Object -First 1) } catch {}
+# Was `try { git fetch 2>$null ... } catch {}`: ANY fetch stderr (offline, auth) threw under Stop, the empty
+# catch swallowed it, $behind stayed null and the guard silently PASSED -- the stale-ship it exists to stop.
+Invoke-Quiet { git -C $claudeMemory fetch -q origin } | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "    WARN: 'git fetch' failed -- freshness UNVERIFIED; packaging from local refs that may be stale." -ForegroundColor Yellow
+} else {
+    $behind = (Invoke-Quiet { git -C $claudeMemory rev-list --count "HEAD..origin/main" } | Select-Object -First 1)
+}
 if ($behind -and ([int]$behind) -gt 0) {
     Write-Host "    FAIL: clone is $behind commit(s) BEHIND origin/main -- packaging would ship a STALE skill." -ForegroundColor Red
     Write-Host "          Run:  git -C `"$claudeMemory`" pull --rebase   then re-run this." -ForegroundColor Red
@@ -72,7 +87,7 @@ Get-ChildItem $skillsRoot -Directory | ForEach-Object {
     # skills carrying a `SKILL_VERSION = <date>` line are touched. Write UTF-8 no-BOM (a BOM corrupts YAML).
     $skillMd = Join-Path $stage "SKILL.md"
     if (Test-Path $skillMd) {
-        $verDate = (git -C $claudeMemory log -1 --format=%cd --date=short -- "skills/$skillName/SKILL.md" 2>$null | Select-Object -First 1)
+        $verDate = (Invoke-Quiet { git -C $claudeMemory log -1 --format=%cd --date=short -- "skills/$skillName/SKILL.md" } | Select-Object -First 1)
         if ($verDate) {
             $orig = Get-Content $skillMd -Raw
             $stamped = [regex]::Replace($orig, '(SKILL_VERSION = )\d{4}-\d{2}-\d{2}', "`${1}$verDate")

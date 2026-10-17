@@ -137,7 +137,16 @@ def looks_high_entropy(value):
     return _class_count(v) >= 3
 
 
-def assignment_is_secret(value):
+# "pass" / "pw" are everyday words -- "tests pass:", "Plex Pass:", "first pass:" -- so the shared
+# 2-classes rule below read prose as credentials ('**forms-portal' = lower + '-'; a code span
+# `subscriptionState="Active"`), and transcript-autosave, which fails closed on any HOT hit in rendered/,
+# then refused every archive commit until a human looked. These two labels get a stricter value test;
+# the long labels (password/token/secret/...) keep the loose, over-redact-is-cheap rule.
+_SHORT_LABEL = re.compile(r"\s*(?:pass|pw)\s*[:=]", re.IGNORECASE)
+_MD_OPENERS = "*`[(<{#>|~"
+
+
+def assignment_is_secret(value, label=""):
     """Looser gate for `password:/token:/secret: <value>` assignments (the one non-always pattern
     that carries a value). Tightened 2026-08-24 sweep: the old 3-of-4-classes-AND-len>=12 rule let
     a weak-but-real password through verbatim ("companyname2026" = 2 classes; "correcthorse…" = 1)
@@ -157,6 +166,13 @@ def assignment_is_secret(value):
     # github_pat_…, sk_live_…, Bearer …, private keys, conn-strings — are caught by always=True above.)
     if (_HEXISH.fullmatch(v) and len(v) < 20) or _IDENTISH.fullmatch(v):
         return False
+    if _SHORT_LABEL.match(label):
+        if value.lstrip()[:1] in _MD_OPENERS:   # '**bold prose**', '`code span`', '[link]' -- markup, not a pasted secret
+            return False
+        if re.search(r"=[\"']", v):            # key="value" attribute syntax -- code, not a credential
+            return False
+        # a real pasted credential: 3+ classes, or digits mixed in, or long enough to be a passphrase
+        return _class_count(v) >= 3 or (any(c.isdigit() for c in v) and _class_count(v) >= 2) or len(v) >= 20
     return _class_count(v) >= 2 or len(v) >= 16
 
 
@@ -409,7 +425,7 @@ def scan_text(text, redact=False):
                 elif value is None:
                     hot = False            # markerless pattern (e.g. pfx): report only
                 elif name == "assignment":
-                    hot = assignment_is_secret(value)
+                    hot = assignment_is_secret(value, line[m.start():span[0]])   # label + separator
                 else:
                     hot = looks_high_entropy(value)
                 matches.append((span, name, hot))

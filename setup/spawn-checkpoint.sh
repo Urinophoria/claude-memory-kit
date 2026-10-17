@@ -60,6 +60,12 @@ begin)
   #      boundary uses (transcript-autosave is the sole committer of rendered/; it honors PUSH WITHHELD).
   #      The live session's transcript is included, so a spawned session can READ its parent from canon.
   bash "${REPO}/setup/transcript-autosave.sh" || true
+  # transcript-autosave ALWAYS exits 0 (a hook must never break a session), so its exit code proves
+  # nothing. The proof is the tree: rendered/ still dirty after it ran = the commit was REFUSED (the
+  # fail-closed secret gate, or the mid-operation hold). This step used to print "committed" regardless.
+  if [ -n "$(git -C "${REPO}" status --porcelain -- transcripts/rendered)" ]; then
+    die "transcript-autosave did NOT commit transcripts/rendered (secret gate or mid-operation hold) -- run: python3 transcripts/render-session.py scan transcripts/rendered, fix the HOT line, then re-run begin"
+  fi
   NEWEST=$($PY - "${REPO}/transcripts/raw" <<'PYEOF'
 import os, sys
 d = sys.argv[1]
