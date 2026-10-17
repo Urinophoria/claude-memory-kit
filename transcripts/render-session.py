@@ -76,6 +76,10 @@ OPEN_TAG_RE = re.compile(r"</?(" + "|".join(NOISE_TAGS) + r")>", re.IGNORECASE)
 # that keeps prose like "Password: entered ✓" readable while still catching real ones.
 SECRET_PATTERNS = [
     ("private-key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"), 0, True),
+    # 2026-10-12: FortiOS reversible 'ENC <base64>' config secrets (passphrase/psksecret/password lines in `show`
+    # output) and live IPsec SA keys from `get vpn ipsec tunnel name` ("enc:  aes-cb  <hex>", "auth: sha256 <hex>").
+    ("fortios-enc", re.compile(r"\bENC\s+([A-Za-z0-9+/=]{16,})"), 1, True),
+    ("ipsec-sa-key", re.compile(r"\b(?:enc|auth):\s+[\w-]+\s+([0-9a-fA-F]{32,})"), 1, True),
     ("aws-key", re.compile(r"\bAKIA[0-9A-Z]{16}\b"), 0, True),
     ("bearer", re.compile(r"\bBearer\s+([A-Za-z0-9\-._~+/]{20,})"), 1, True),
     ("gh-token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"), 0, True),
@@ -89,7 +93,8 @@ SECRET_PATTERNS = [
     ("google-key", re.compile(r"\bAIza[A-Za-z0-9_-]{30,}\b"), 0, True),
     ("conn-string", re.compile(r"://[^\s:/@]+:([^\s:/@]{4,})@"), 1, True),
     ("assignment", re.compile(
-        r"\b(?:password|passwd|pwd|api[_-]?key|apikey|secret|token|client[_-]?secret)"
+        # "pass"/"pw" added 2026-10-06: a chat-pasted "user: X  Pass: <value>" slipped every label here.
+        r"\b(?:password|passwd|pwd|pass|pw|api[_-]?key|apikey|secret|token|client[_-]?secret)"
         r"\s*[:=]\s*(\S{6,})", re.IGNORECASE), 1, False),
     ("pfx", re.compile(r"\bpfx[_-]?(?:pw|password)\b", re.IGNORECASE), None, False),
 ]
