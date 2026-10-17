@@ -63,6 +63,18 @@ else
     "${PY}" "${TOOL}" mirror --quiet 2>/dev/null
 fi
 
+# SELECTIVE DRIFT to a second, narrower target (optional). mirror-target.txt takes everything;
+# drift-target.txt (gitignored, per machine) takes only the sessions transcripts/drift-policy.txt clears
+# (no sensitive record content entered Claude's context, quiet `settle` hours) -- for when one archive may
+# hold everything but another (a personal NAS, a shared drive) may not.
+# Absent file = off. Same visibility rule as the mirror: configured-but-failing is LOUD; quiet mode
+# still prints any HELD session found already on the target (you remove it; this never deletes).
+if [ -f "${REPO}/transcripts/drift-target.txt" ]; then
+    if ! "${PY}" "${TOOL}" drift --quiet 2>&1; then
+        echo "⚠️  transcript drift FAILED — policy-cleared sessions did not reach the drift target." >&2
+    fi
+fi
+
 # Nothing new to say? Stay invisible.
 [ -n "$(git -C "${REPO}" status --porcelain -- transcripts/rendered)" ] || exit 0
 

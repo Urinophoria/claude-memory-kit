@@ -1,0 +1,54 @@
+# drift-policy.txt — which RAW transcripts may DRIFT to a second, narrower archive (render-session.py drift).
+#
+# OFF until you set it up. Drift only runs on a machine with a transcripts/drift-target.txt (gitignored, per
+# machine). `mirror` (mirror-target.txt) copies EVERY session to one archive; `drift` copies only the
+# sessions this policy clears. Use it when one archive may hold everything but another may not: e.g. a work
+# machine whose sessions may all go to the work archive, but to a personal NAS only if they never put
+# sensitive record CONTENT in front of Claude.
+#
+# THE LINE this classifier draws: a transcript is a RECORD OF WORK unless record CONTENT entered Claude's
+# context. Listing, moving or inventorying a data folder, running a pipeline over it, or writing the tooling
+# is work -- it drifts. Reading a record (Read/Grep under a data root, `cat`/`Get-Content` on one, a
+# connector that returns mail or documents, a records-system URL) puts content on screen -- it holds.
+#
+# HOW A SESSION IS JUDGED (first hit wins; whole-session granularity):
+#   hold <session-id>     your explicit call -- never drifts. Reason after " # ".
+#   drift <session-id>    your explicit call -- drifts even if a rule below would hold it.
+#   root <path>           a data root. HOLD if Read/Grep targets a path under it, or if any other tool's
+#                         input names it AND a `reader` verb (drive letter / slash style don't matter).
+#                         Write/Edit/Glob never count: Claude's own text, or file names only.
+#   reader <regex>        verbs that put file CONTENT on screen (only meaningful next to a root).
+#   workfile <regex>      paths under a root that are a pipeline's OWN telemetry (logs, manifests, hashes):
+#                         reading those is a work record, not a record.
+#   tool <regex>          HOLD if the session called a tool whose NAME matches (connectors returning records).
+#   match <regex>         HOLD if any tool input matches (record systems / APIs whose responses are content).
+#   settle <hours>        Only sessions quiet this long drift, so a verdict can't flip after the copy.
+# Everything else DRIFTS -- so with no roots/tools/matches below, drift copies every settled session.
+# Editing this file re-classifies every session (the policy is hashed). Check your rules with:
+#   py -3 transcripts/render-session.py classify       (hold / drift / wait for every archived session)
+#   py -3 transcripts/drift-test.py                     (the mechanism's regression test)
+
+settle 12
+
+# --- data roots: folders that hold records you never want on the narrower archive ---
+# root C:\Sensitive-Records
+# root /srv/records
+
+# --- content-reading verbs (a root path + one of these = Claude saw record content) ---
+# Deliberately NOT included: `type` (matches Add-Type and JSON 'type:') and `open(` (hashing / zip copies).
+reader \b(cat|more|less|head|tail|strings|xxd|grep|egrep|rg|findstr|sed|awk)\b
+reader \b(Get-Content|gc|Select-String|sls|Import-Csv|Format-Hex)\b
+
+# --- a pipeline's own telemetry under a root (reading it = work, not a record) ---
+workfile \\_manifest(\\|$)
+workfile \.(log|md5|sha256|done)$
+
+# --- connectors that return records (match the TOOL NAME; MCP tools look like mcp__<server>__<tool>) ---
+# tool __(outlook_[a-z_]+|sharepoint_[a-z_]+|teams_[a-z_]+)$
+
+# --- record systems / APIs whose responses are content ---
+# match https?://\S*records\.example\.com
+
+# --- your explicit rulings (session id = first 8 hex chars of the transcript's id) ---
+# hold  1a2b3c4d  # why
+# drift 5e6f7a8b  # why

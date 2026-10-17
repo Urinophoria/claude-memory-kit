@@ -33,6 +33,7 @@ See README.md in this folder for the backup/commit policy.
 
 import argparse
 import gzip
+import hashlib
 import json
 import os
 import re
@@ -765,6 +766,240 @@ def cmd_mirror(args):
         sys.exit(1)
 
 
+# ── DRIFT: selective off-box copy of the raw tier to a second, narrower target ──────────────────────
+# `mirror` copies EVERYTHING to one target. Some machines need a second copy that is choosier: e.g. a work
+# machine whose raw tier may go to the work archive in full, but to a personal NAS only for the sessions
+# that never handled sensitive records. The line drawn here: a transcript is a RECORD OF WORK unless record
+# CONTENT entered Claude's context. Listing, moving or inventorying a data root, or running a pipeline over
+# it, is work; so is building the tooling. So `drift` copies to drift-target.txt only the sessions the
+# policy clears, while mirror-target.txt (if set) still takes everything.
+#   HOLD  record content entered Claude's context: Read/Grep of a path under a data `root`; any other tool
+#         whose input names a root AND a `reader` verb (cat, Get-Content, Import-Csv, grep...); a `tool`
+#         that returns records (a mail / chat / document connector); or a `match` (record URLs / APIs)
+#   DRIFT none of that, AND the session has been quiet `settle` hours (classification is final)
+#   Explicit `hold`/`drift` lines in drift-policy.txt (your call) beat the classifier.
+# It never deletes: a HELD session already on the target is reported for you to remove.
+DRIFT_POLICY = Path(__file__).parent / "drift-policy.txt"
+DRIFT_TARGET = Path(__file__).parent / "drift-target.txt"
+DRIFT_STATE = Path(__file__).parent / ".drift-state.json"
+DRIFT_RAW = Path(__file__).parent / "raw"         # the local archive `drift` reads (tests repoint it)
+
+
+def load_drift_policy(path=None):
+    path = path or DRIFT_POLICY      # resolved at CALL time (a def-time default ignored a repointed policy)
+    pol = {"root": [], "reader": [], "workfile": [], "tool": [], "match": [], "hold": [], "drift": [],
+           "settle": 12.0, "hash": "none"}
+    if not Path(path).exists():
+        return pol
+    text = Path(path).read_text(encoding="utf-8")
+    pol["hash"] = hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]   # a policy edit re-classifies all
+    for raw in text.splitlines():
+        ln = raw.strip()
+        if not ln or ln.startswith("#"):
+            continue
+        kw, _, val = ln.partition(" ")
+        val = val.split(" #", 1)[0].strip()       # trailing "  # reason" comments
+        if not val:
+            continue
+        if kw == "root":
+            # Drive-less, backslash-normalized: C:\Records, C:/Records and Git Bash's
+            # /c/Records all reduce to "\records".
+            key = re.sub(r"\\+", r"\\", val.replace("/", "\\")).lower().rstrip("\\")
+            pol["root"].append(re.sub(r"^[a-z]:", "", key))
+        elif kw in ("reader", "workfile", "tool", "match"):
+            pol[kw].append(re.compile(val, re.IGNORECASE))
+        elif kw in ("hold", "drift"):
+            pol[kw].append(val.lower()[:8])
+        elif kw == "settle":
+            pol["settle"] = float(val)
+    return pol
+
+
+def _strings(obj):
+    if isinstance(obj, str):
+        yield obj
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            yield from _strings(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from _strings(v)
+
+
+# Tools that put a file's CONTENT into Claude's context: a root in their path field is a read.
+_CONTENT_PATH = {"Read": ("file_path",), "NotebookRead": ("notebook_path",), "Grep": ("path",)}
+# Tools whose inputs are Claude's OWN text or only file names: never a read of record content. (Writing
+# ABOUT a data root into a doc -- even the policy file itself -- is not touching it.)
+_NO_CONTENT = {"Write", "Edit", "MultiEdit", "NotebookEdit", "Glob"}
+
+
+def _norm(s):
+    return re.sub(r"\\+", r"\\", s.replace("/", "\\")).lower()
+
+
+_PATH_TOKEN = re.compile(r"[A-Za-z]:[\\/][^\s'\"|;,)`]*|/[A-Za-z]/[^\s'\"|;,)`]*")
+
+
+def _data_paths(s, pol):
+    """Root-bearing paths named in s that are NOT pipeline telemetry (`workfile`): the record candidates."""
+    out = []
+    for p in _PATH_TOKEN.findall(s):
+        n = _norm(p).rstrip("\\")
+        if any(r in n for r in pol["root"]) and not any(w.search(n) for w in pol["workfile"]):
+            out.append(n)
+    return out
+
+
+def _session_id8(name):
+    m = re.search(r"\.([0-9a-f]{8})\.jsonl(\.gz)?$", name)
+    return m.group(1) if m else name[:8].lower()
+
+
+def classify_raw(path, pol):
+    """-> (decision, reason, last_ts). decision: hold | drift | wait. Streams the whole file."""
+    sid = _session_id8(Path(path).name)
+    for p in pol["hold"]:
+        if sid.startswith(p):
+            return "hold", "policy: hold " + p, None
+    forced = any(sid.startswith(p) for p in pol["drift"])
+    opener = gzip.open if str(path).endswith(".gz") else open
+    last = None
+    with opener(path, "rt", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            last = rec.get("timestamp") or last
+            if forced or rec.get("type") != "assistant":
+                continue
+            content = (rec.get("message") or {}).get("content")
+            if not isinstance(content, list):
+                continue
+            for b in content:
+                if not isinstance(b, dict) or b.get("type") != "tool_use":
+                    continue
+                name, inp = b.get("name") or "", b.get("input")
+                for rx in pol["tool"]:
+                    if rx.search(name):
+                        return "hold", "tool: " + rx.pattern, last
+                if name in _NO_CONTENT:
+                    continue
+                if name in _CONTENT_PATH and isinstance(inp, dict):
+                    for f in _CONTENT_PATH[name]:
+                        v = inp.get(f)
+                        if isinstance(v, str):
+                            n = _norm(v)
+                            if any(w.search(n) for w in pol["workfile"]):
+                                continue          # reading the pipeline's own log/manifest = work
+                            for r in pol["root"]:
+                                if r in n:
+                                    return "hold", f"read: {name} {r}", last
+                    continue
+                for s in _strings(inp):
+                    if _data_paths(s, pol):
+                        for rx in pol["reader"]:
+                            if rx.search(s):
+                                return "hold", f"read: {name} + {rx.pattern}", last
+                    for rx in pol["match"]:
+                        if rx.search(s):
+                            return "hold", "match: " + rx.pattern, last
+    ts = local_time(last)
+    if ts is not None:
+        age_h = (datetime.now().astimezone() - ts).total_seconds() / 3600
+        if age_h < pol["settle"]:
+            return "wait", f"active {age_h:.1f}h ago (settle {pol['settle']:g}h)", last
+    return "drift", "policy: drift" if forced else "work record only", last
+
+
+def classify_dir(raw_dir, pol, cache=None):
+    """Classify every *.jsonl.gz in raw_dir; reuse cache[name] when size+mtime are unchanged."""
+    out = []
+    for f in sorted(Path(raw_dir).glob("*.jsonl.gz")):
+        st = f.stat()
+        key = f"{st.st_size}:{int(st.st_mtime)}:{pol['hash']}"
+        c = (cache or {}).get(f.name)
+        if c and c.get("key") == key and c.get("decision") in ("hold", "drift"):
+            out.append((f, c["decision"], c["reason"]))
+            continue
+        decision, reason, _ = classify_raw(f, pol)
+        if cache is not None and decision in ("hold", "drift"):
+            cache[f.name] = {"key": key, "decision": decision, "reason": reason}
+        out.append((f, decision, reason))
+    return out
+
+
+def cmd_classify(args):
+    pol = load_drift_policy()
+    rows = classify_dir(args.dir or DRIFT_RAW, pol)
+    for f, decision, reason in rows:
+        print(f"  {decision.upper():5}  {_session_id8(f.name)}  {reason:42.42}  {f.name[:60]}")
+    n = {d: sum(1 for _, x, _ in rows if x == d) for d in ("hold", "drift", "wait")}
+    print(f"\n  {len(rows)} session(s): {n['drift']} drift, {n['hold']} hold, {n['wait']} still settling")
+
+
+def cmd_drift(args):
+    target = args.target
+    if not target and DRIFT_TARGET.exists():
+        target = next((l.strip() for l in DRIFT_TARGET.read_text(encoding="utf-8").splitlines()
+                       if l.strip() and not l.strip().startswith("#")), None)
+    if not target:
+        if not args.quiet:
+            print(f"No drift target. Put one line in {DRIFT_TARGET} (the narrower archive, e.g. a\n"
+                  f"  personal NAS share). Absent file = drift is off on this box.")
+        return
+    dest = Path(target) / "raw"
+    try:
+        reachable = Path(target).exists()
+    except OSError:
+        reachable = False
+    if not reachable:
+        if not args.quiet:
+            print(f"⚠ drift target unreachable, skipping: {target}")
+        return
+    pol = load_drift_policy()
+    try:
+        cache = json.loads(DRIFT_STATE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        cache = {}
+    rows = classify_dir(DRIFT_RAW, pol, cache)
+    dest.mkdir(parents=True, exist_ok=True)
+    drifted = held = waiting = failed = 0
+    for src, decision, reason in rows:
+        dst = dest / src.name
+        if decision == "hold":
+            held += 1
+            if dst.exists():   # was drifted before a policy change; Claude never deletes from the target
+                print(f"  ‼ HELD BUT ON TARGET -- remove it by hand: {dst}  ({reason})")
+            continue
+        if decision == "wait":
+            waiting += 1
+            continue
+        if dst.exists() and dst.stat().st_size == src.stat().st_size \
+                and dst.stat().st_mtime >= src.stat().st_mtime:
+            continue
+        shutil.copy2(src, dst)
+        try:
+            with gzip.open(dst, "rb") as fh:
+                while fh.read(4 * 1024 * 1024):
+                    pass
+            drifted += 1
+            if not args.quiet:
+                print(f"  drifted   raw/{src.name}")
+        except (OSError, EOFError) as exc:
+            failed += 1
+            print(f"  ‼ CORRUPT AFTER COPY: {dst.name} -- {exc}")
+    try:
+        DRIFT_STATE.write_text(json.dumps(cache, indent=1), encoding="utf-8")
+    except OSError:
+        pass
+    if not args.quiet or failed:
+        print(f"\n{target}\n  {drifted} drifted (gzip-verified), {held} held, {waiting} settling"
+              + (f", ⚠ {failed} CORRUPT" if failed else ""))
+    if failed:
+        sys.exit(1)
+
+
 def cmd_prompts(args):
     """Print only the user's turns across sessions — the corpus for mining memory.
 
@@ -904,6 +1139,15 @@ def main():
     pm.add_argument("--target", help="destination root (default: mirror-target.txt)")
     pm.add_argument("--quiet", action="store_true", help="hook mode: errors only")
     pm.set_defaults(func=cmd_mirror)
+
+    pc = sub.add_parser("classify", help="drift-policy verdict (hold/drift/wait) per archived session")
+    pc.add_argument("--dir", help="a raw/ dir to classify (default: ./raw; a NAS raw/ dir audits it)")
+    pc.set_defaults(func=cmd_classify)
+
+    pd = sub.add_parser("drift", help="copy policy-cleared raw sessions to drift-target.txt")
+    pd.add_argument("--target", help="destination root (default: drift-target.txt)")
+    pd.add_argument("--quiet", action="store_true", help="hook mode: errors + held-on-target only")
+    pd.set_defaults(func=cmd_drift)
 
     pa = sub.add_parser("archive", help="gzip raw transcripts into the local archive")
     pa.add_argument("--project", default=DEFAULT_PROJECT)

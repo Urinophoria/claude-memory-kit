@@ -39,6 +39,9 @@ id_ed25519
 /transcripts/raw/
 /transcripts/.render-state.json
 /transcripts/mirror-target.txt
+# Per-machine selective-drift target + its verdict cache (see transcripts/README.md).
+/transcripts/drift-target.txt
+/transcripts/.drift-state.json
 
 # Python + OS cruft
 __pycache__/
