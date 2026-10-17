@@ -30,7 +30,7 @@ if [ -f "${OK}" ]; then
   [ $(( NOW - T )) -le 3600 ] && exit 0
 fi
 cat >&2 <<'EOF'
-BLOCKED by STANDARDS 2B: before OFFERING a new session, checkpoint this one --
+BLOCKED by STANDARDS §2B: before OFFERING a new session, checkpoint this one --
   1. bash setup/spawn-checkpoint.sh begin    (transcript download: archive + render + commit + mirror off-box;
                                                if this box can't reach its mirror, ASK THE USER to connect it)
   2. update memory + every relevant PROJECT.md/SESSION.md with what this spawn is for and why

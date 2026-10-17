@@ -122,6 +122,9 @@ sessions that never invoke the skill, and recall brings in topic facts as the ta
   No python → proceeds unlinted.
 - **Save-path gate #2 — `setup/canon-save.sh` (foreground).** Lints before staging whenever there is anything
   to commit or push; a hard failure **refuses the whole save** — the person at the keyboard fixes it.
+- **Regression test — `bash setup/test-save-gates.sh`.** Proves both gates (and the STANDARDS 2B spawn
+  checkpoint) end to end in a throwaway scratch clone + local bare origin — never your real one — on its own
+  synthetic fixture: 91 checks, ~2 min on Windows. **Re-run it after ANY change to a save path.**
 - **`dr-check.sh [6]` delivery check** — measures the boot `additionalContext` field (not the JSON
   envelope) against the 10,000 cap, and probes the newest-started local transcript: if that session's
   atoms boot arrived as `<persisted-output>` (the 2 KB-preview fallback), it says so.
