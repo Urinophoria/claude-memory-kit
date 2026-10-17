@@ -53,3 +53,7 @@ Thumbs.db
 *conflict*
 *Conflict*
 * (1)*
+# ...but a rendered transcript is named after its session title, and a session about a merge conflict is
+# routine: '*Conflict*' (case-insensitive on Windows) silently kept those out of git, and transcript-autosave
+# never committed them. Rendered transcripts are always tracked.
+!/transcripts/rendered/*.md

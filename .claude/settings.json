@@ -17,7 +17,7 @@
         ]
       },
       {
-        "matcher": "mcp__.*__(spawn_task|start_session)",
+        "matcher": "mcp__.*__(spawn_task|start_session|hand_off_to_session)",
         "hooks": [
           { "type": "command", "shell": "bash", "command": "bash \"$HOME/Claude-Memory/setup/spawn-guard.sh\"", "timeout": 10 }
         ]

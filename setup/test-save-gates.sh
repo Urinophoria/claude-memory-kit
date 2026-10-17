@@ -67,7 +67,8 @@ git config user.name "Save-Gates Test"; git config user.email "save-gates@exampl
 # HEAD's copy instead of the working tree's hid a scanner false positive (the 10-08..10-17 archive stall) as
 # one "pre-existing" T14 failure, and later made spawn-checkpoint's new commit check look broken.
 for f in setup/session-autosave.sh setup/atoms-lint.py setup/check-canon.sh setup/transcript-autosave.sh setup/canon-save.sh \
-         setup/spawn-checkpoint.sh setup/spawn-guard.sh transcripts/render-session.py \n         transcripts/redaction-test.py transcripts/drift-test.py; do
+         setup/spawn-checkpoint.sh setup/spawn-guard.sh transcripts/render-session.py \
+         transcripts/redaction-test.py transcripts/drift-test.py .gitignore .claude/settings.json; do
   [ -f "${SRC}/${f}" ] && cp "${SRC}/${f}" "${R}/${f}"
 done
 # The scratch clone's rendered/ is a synthetic clean fixture, not the repo's real archive (see header).
@@ -325,31 +326,54 @@ check "nothing committed off main, HELD marker written" bash -c "[ \"\$(git rev-
 git checkout -q -f main
 
 if [ -f setup/spawn-checkpoint.sh ] && [ -f setup/spawn-guard.sh ]; then
-  echo; echo "== T30 §2B spawn guard: blocks without a checkpoint, allows a fresh one, re-blocks a stale/garbled one"
+  # Stamps are per session: begin/verify key on CLAUDE_CODE_SESSION_ID, the guard on its payload's
+  # session_id. The test session's id IS its transcript's stem, as in Claude Code (<slug>/<session_id>.jsonl).
+  SJID="0a1b2c3d-0000-4000-8000-000000000001"; OTHER="0a1b2c3d-0000-4000-8000-0000000000bb"
+  export CLAUDE_CODE_SESSION_ID="${SJID}"
+  PL='{"tool_name":"mcp__ccd_session__start_session","session_id":"'"${SJID}"'"}'
+  OKS=".git/spawn-checkpoint-OK.${SJID}"; BGS=".git/spawn-checkpoint-begin.${SJID}"
+  guard() { G=0; printf '%s' "$1" | bash setup/spawn-guard.sh 2> "${T}/guard.err" || G=$?; }
+
+  echo; echo "== T30 §2B spawn guard: blocks without a checkpoint, allows a fresh one FOR THIS SESSION, re-blocks a stale/garbled/other-session one"
   reset_state
-  G=0; echo '{"tool_name":"mcp__ccd_session__spawn_task"}' | bash setup/spawn-guard.sh 2> "${T}/guard.err" || G=$?
+  guard "${PL}"
   check "no stamp -> BLOCK (exit 2) citing §2B" bash -c "[ '${G}' = 2 ] && grep -q 'STANDARDS §2B' '${T}/guard.err'"
-  printf '%s OK test\n' "$(date +%s)" > .git/spawn-checkpoint-OK
-  G=0; echo '{}' | bash setup/spawn-guard.sh 2>/dev/null || G=$?
-  check "fresh stamp -> allow" [ "${G}" = 0 ]
-  printf '%s OK test\n' "$(( $(date +%s) - 4000 ))" > .git/spawn-checkpoint-OK
-  G=0; echo '{}' | bash setup/spawn-guard.sh 2>/dev/null || G=$?
-  check "stamp over 60 min -> BLOCK" [ "${G}" = 2 ]
-  printf 'garbage\n' > .git/spawn-checkpoint-OK
-  G=0; echo '{}' | bash setup/spawn-guard.sh 2>/dev/null || G=$?
-  check "garbled stamp -> BLOCK" [ "${G}" = 2 ]
-  rm -f .git/spawn-checkpoint-OK
+  printf '%s OK test\n' "$(date +%s)" > "${OKS}"
+  guard "${PL}"; check "fresh stamp for this session -> allow" [ "${G}" = 0 ]
+  guard "${PL/${SJID}/${OTHER}}"; check "another session's stamp (e.g. the parent's) does NOT arm this one" [ "${G}" = 2 ]
+  guard '{"session_id":"'"${OTHER}"'","tool_name":"mcp__ccd_session__start_session","tool_input":{"session_id":"'"${SJID}"'"}}'
+  check "a session_id inside tool_input cannot borrow another session's stamp" [ "${G}" = 2 ]
+  guard '{}'; check "a payload without session_id ignores per-session stamps" [ "${G}" = 2 ]
+  printf '%s OK test\n' "$(( $(date +%s) - 4000 ))" > "${OKS}"
+  guard "${PL}"; check "stamp over 60 min -> BLOCK" [ "${G}" = 2 ]
+  printf 'garbage\n' > "${OKS}"
+  guard "${PL}"; check "garbled stamp -> BLOCK" [ "${G}" = 2 ]
+  rm -f "${OKS}"
+
+  echo; echo "== T30b the settings.json matcher routes every session-creating tool to spawn-guard"
+  # T30 pipes payloads straight into the script, so it cannot see the matcher -- which is how start_session
+  # (and then hand_off_to_session) went unguarded while T30 stayed green. Claude Code tests a non-simple
+  # matcher as an UNANCHORED regex against the tool name; re.search is the same test.
+  check "matcher covers spawn_task, start_session, hand_off_to_session -- and no read-only session tools" $PY - .claude/settings.json <<'PYEOF'
+import json, re, sys
+hooks = json.load(open(sys.argv[1], encoding="utf-8")).get("hooks", {}).get("PreToolUse", [])
+ms = [h.get("matcher", "") for h in hooks if any("spawn-guard.sh" in x.get("command", "") for x in h.get("hooks", []))]
+m = re.compile(ms[0]) if len(ms) == 1 else None
+must = ["mcp__ccd_session__spawn_task", "mcp__ccd_session__start_session", "mcp__ccd_session__hand_off_to_session"]
+never = ["mcp__ccd_session__mark_chapter", "mcp__ccd_session__dismiss_task", "mcp__ccd_session__list_start_targets", "Bash"]
+sys.exit(0 if m and all(m.search(t) for t in must) and not any(m.search(t) for t in never) else 1)
+PYEOF
 
   echo; echo "== T31 §2B checkpoint: begin on a box with NO mirror -> archives locally, prompts to connect the mirror, exit 3"
   SLUGD="${HOME}/.claude/projects/gates-slug"; mkdir -p "${SLUGD}"
-  SJ="${SLUGD}/0a1b2c3d-0000-4000-8000-000000000001.jsonl"
+  SJ="${SLUGD}/${SJID}.jsonl"
   live_turn() { printf '{"type":"user","timestamp":"%s","message":{"role":"user","content":"gates probe %s"}}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >> "${SJ}"; }
-  reset_state; rm -f .git/spawn-checkpoint-begin transcripts/mirror-target.txt
+  reset_state; rm -f "${BGS}" transcripts/mirror-target.txt
   live_turn a; B=0; bash setup/spawn-checkpoint.sh begin > "${T}/b.out" 2> "${T}/b.err" || B=$?
   check "exit 3 (mirror pending)" [ "${B}" = 3 ]
   check "prompt names mirror-target.txt and says Claude never types the password" bash -c "grep -q 'mirror-target.txt' '${T}/b.err' && grep -q 'never types' '${T}/b.err'"
   check "raw archived locally anyway" bash -c "ls transcripts/raw/*.gz >/dev/null 2>&1"
-  check "begin stamp records mirror=pending" grep -q 'mirror=pending' .git/spawn-checkpoint-begin
+  check "begin stamp records mirror=pending" grep -q 'mirror=pending' "${BGS}"
   V=0; bash setup/spawn-checkpoint.sh verify > /dev/null 2> "${T}/v.err" || V=$?
   check "verify refuses while the mirror is pending" bash -c "[ '${V}' = 1 ] && grep -q 'mirror is still pending' '${T}/v.err'"
 
@@ -358,7 +382,8 @@ if [ -f setup/spawn-checkpoint.sh ] && [ -f setup/spawn-guard.sh ]; then
   live_turn b; B=0; bash setup/spawn-checkpoint.sh begin > "${T}/b.out" 2> "${T}/b.err" || B=$?
   check "exit 0" [ "${B}" = 0 ]
   check "raw .gz landed on the mirror" bash -c "ls '${T}/nas/ClaudeArchive/raw/'*.gz >/dev/null 2>&1"
-  check "stamp mirror=ok" grep -q 'mirror=ok' .git/spawn-checkpoint-begin
+  check "stamp mirror=ok" grep -q 'mirror=ok' "${BGS}"
+  check "this session's own rendered transcript is tracked in HEAD" bash -c "git ls-files transcripts/rendered | grep -q 'session-0a1b2c3d'"
 
   echo; echo "== T33 verify enforces steps 2+3: a commit, a narrative change, a NEW atom tied to it, pushed"
   V=0; bash setup/spawn-checkpoint.sh verify > /dev/null 2> "${T}/v.err" || V=$?
@@ -377,17 +402,58 @@ if [ -f setup/spawn-checkpoint.sh ] && [ -f setup/spawn-guard.sh ]; then
   git push -q origin main
   V=0; bash setup/spawn-checkpoint.sh verify > "${T}/v.out" 2> "${T}/v.err" || V=$?
   check "tied atom + pushed -> VERIFIED" bash -c "[ '${V}' = 0 ] && grep -q 'tst-91' '${T}/v.out'"
-  G=0; echo '{}' | bash setup/spawn-guard.sh 2>/dev/null || G=$?
-  check "guard now ALLOWS the spawn" [ "${G}" = 0 ]
+  guard "${PL}"; check "guard now ALLOWS this session's spawn" [ "${G}" = 0 ]
+  guard "${PL/${SJID}/${OTHER}}"; check "...but still BLOCKS another session (a child in the same folder)" [ "${G}" = 2 ]
+  check "verify consumed the begin stamp (one begin arms the guard once)" not test -e "${BGS}"
+  V=0; bash setup/spawn-checkpoint.sh verify > /dev/null 2> "${T}/v.err" || V=$?
+  check "a second verify without a new begin refuses" bash -c "[ '${V}' = 1 ] && grep -q 'no begin stamp' '${T}/v.err'"
 
   echo; echo "== T34 --mirror-waived needs the user's reason; with one, the waiver is recorded"
   rm -f transcripts/mirror-target.txt; live_turn c
   B=0; bash setup/spawn-checkpoint.sh begin --mirror-waived > /dev/null 2>&1 || B=$?
   check "waiver without a reason -> refuse" [ "${B}" = 1 ]
   live_turn d; B=0; bash setup/spawn-checkpoint.sh begin --mirror-waived "user: off-LAN tonight" > /dev/null 2>&1 || B=$?
-  check "waiver with a reason -> ok, recorded" bash -c "[ '${B}' = 0 ] && grep -q 'waived: user: off-LAN tonight' .git/spawn-checkpoint-begin"
-  check "begin disarms an old OK stamp" not test -e .git/spawn-checkpoint-OK
-  rm -rf "${SLUGD}" .git/spawn-checkpoint-begin
+  check "waiver with a reason -> ok, recorded" bash -c "[ '${B}' = 0 ] && grep -q 'waived: user: off-LAN tonight' '${BGS}'"
+  check "begin disarms an old OK stamp" not test -e "${OKS}"
+
+  echo; echo "== T35 a REFUSED archive commit: begin dies naming it and leaves NO begin stamp for verify"
+  check "(setup) T34's begin left a stamp" test -f "${BGS}"
+  git checkout -q -b gates-hold; live_turn e      # off main -> transcript-autosave renders, then holds the commit
+  B=0; bash setup/spawn-checkpoint.sh begin --mirror-waived "test" > /dev/null 2> "${T}/b.err" || B=$?
+  check "held commit -> exit 1, 'did NOT commit transcripts/rendered'" bash -c "[ '${B}' = 1 ] && grep -q 'did NOT commit transcripts/rendered' '${T}/b.err'"
+  check "the earlier begin stamp is gone" not test -e "${BGS}"
+  V=0; bash setup/spawn-checkpoint.sh verify > /dev/null 2> "${T}/v.err" || V=$?
+  check "verify refuses (no begin stamp to honor)" bash -c "[ '${V}' = 1 ] && grep -q 'no begin stamp' '${T}/v.err'"
+  git checkout -q -f main; git clean -qfd -- transcripts/rendered; rm -f .git/autosave-HELD
+
+  echo; echo "== T37 a render that CRASHES leaves rendered/ clean -- begin still dies (prove THIS session's file)"
+  printf '{"type":"ai-title","aiTitle":"Crash probe title"}\n' >> "${SJ}"; live_turn i
+  NEWNAME=$($PY - "${SJ}" <<'PYEOF'
+import importlib.util, sys
+from pathlib import Path
+s = importlib.util.spec_from_file_location("rs", "transcripts/render-session.py"); rs = importlib.util.module_from_spec(s); s.loader.exec_module(rs)
+m = rs.session_meta(Path(sys.argv[1])); st = rs.local_time(m["first"])
+print(f"{st:%Y-%m-%d}-{rs.slugify(rs.display_title(m), m['session_id'][:8])}.md")
+PYEOF
+)
+  mkdir -p "transcripts/rendered/${NEWNAME}"      # the render's write target is a directory -> render crashes
+  sleep 1
+  B=0; bash setup/spawn-checkpoint.sh begin --mirror-waived "test" > "${T}/b.out" 2> "${T}/b.err" || B=$?
+  check "render crashed, tree clean -> begin exit 1 'NOT re-rendered'" bash -c "[ '${B}' = 1 ] && grep -q 'NOT re-rendered' '${T}/b.err'"
+  grep -q 'NOT re-rendered' "${T}/b.err" || { echo "    begin rc=${B}, stderr:"; sed -n '1,8p' "${T}/b.err"; cat "${T}/b.out"; ls -la --time-style=+%T.%N transcripts/rendered | head; $PY -c "import json;print(json.load(open('transcripts/.render-state.json'))['${SJID}'])"; git log -3 --format='%h %s' --stat | head -20; }
+  rmdir "transcripts/rendered/${NEWNAME}"
+
+  echo; echo "== T36 a session titled '...conflict...' reaches git; an output git IGNORES makes begin die"
+  printf '{"type":"ai-title","aiTitle":"Fix the merge conflict in canon"}\n' >> "${SJ}"; live_turn g
+  B=0; bash setup/spawn-checkpoint.sh begin --mirror-waived "test" > /dev/null 2> "${T}/b.err" || B=$?
+  check "begin ok, and the conflict-titled render is TRACKED in HEAD" bash -c "[ '${B}' = 0 ] && git ls-files transcripts/rendered | grep -q 'merge-conflict'"
+  printf '*probe-conflict*\n' > transcripts/rendered/.gitignore; git add transcripts/rendered/.gitignore; git commit -qm "test: ignore a probe"
+  printf '{"type":"ai-title","aiTitle":"Probe conflict again"}\n' >> "${SJ}"; live_turn h
+  B=0; bash setup/spawn-checkpoint.sh begin --mirror-waived "test" > /dev/null 2> "${T}/b.err" || B=$?
+  check "an ignored output (clean tree, nothing committed) -> begin exit 1 'NOT tracked'" bash -c "[ '${B}' = 1 ] && grep -q 'NOT tracked' '${T}/b.err'"
+
+  rm -rf "${SLUGD}" .git/spawn-checkpoint-begin.* .git/spawn-checkpoint-OK.*
+  unset CLAUDE_CODE_SESSION_ID
 fi
 
 echo; echo "== T23 timing (warm mirror, plain edit)"

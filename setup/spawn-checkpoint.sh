@@ -18,13 +18,21 @@
 #   bash setup/spawn-checkpoint.sh verify      # proves 1-3 landed + pushed; ARMS setup/spawn-guard.sh for 60 min
 #   bash setup/spawn-checkpoint.sh status
 # Exit: 0 ok | 1 failed (reason printed) | 3 begin done locally but the mirror needs the user (connect, then re-run).
+#
+# STAMPS ARE PER SESSION: begin/verify key their stamps on CLAUDE_CODE_SESSION_ID
+# (set in the Bash tool), and spawn-guard reads the same id from its payload, so one session's checkpoint never
+# arms another's spawn -- not even a child started in its parent's folder. A failed begin leaves NO begin stamp
+# (it used to leave the previous one, which verify then honored), and verify consumes the begin it proved, so
+# one begin arms the guard at most once. Without CLAUDE_CODE_SESSION_ID (a terminal run) the stamps are the
+# shared, unsuffixed files, which the guard honors only for a payload without a session_id.
 set -uo pipefail
 
 REPO="${HOME}/Claude-Memory"
 cd "${REPO}" || { echo "[spawn-checkpoint] FAILED: no canon at ${REPO}" >&2; exit 1; }
 GITDIR="$(git rev-parse --absolute-git-dir 2>/dev/null)" || { echo "[spawn-checkpoint] FAILED: not a git repo" >&2; exit 1; }
-BEGIN="${GITDIR}/spawn-checkpoint-begin"
-OKSTAMP="${GITDIR}/spawn-checkpoint-OK"
+SID="$(printf '%s' "${CLAUDE_CODE_SESSION_ID:-}" | tr -cd 'A-Za-z0-9-')"
+BEGIN="${GITDIR}/spawn-checkpoint-begin${SID:+.${SID}}"
+OKSTAMP="${GITDIR}/spawn-checkpoint-OK${SID:+.${SID}}"
 MIRRORCFG="${REPO}/transcripts/mirror-target.txt"
 HOST="$(hostname 2>/dev/null || echo this-box)"
 die() { printf '[spawn-checkpoint] FAILED: %s\n' "$*" >&2; exit 1; }
@@ -53,7 +61,8 @@ begin)
   if [ "${2:-}" = "--mirror-waived" ]; then
     WAIVE="${3:-}"; [ -n "${WAIVE}" ] || die "--mirror-waived needs a reason (the user's words)"
   fi
-  rm -f "${OKSTAMP}"
+  rm -f "${OKSTAMP}" "${BEGIN}"     # a begin that dies below must leave nothing verify could honor
+  find "${GITDIR}" -maxdepth 1 -name 'spawn-checkpoint-*.*' -mtime +1 -delete 2>/dev/null   # old sessions' stamps
   [ -n "${PY}" ] || die "no python -- render-session.py cannot archive"
   T0=$(date +%s)
   # (1a) archive + render + secret-gated commit of rendered/ + push: the SAME sanctioned path the session
@@ -65,6 +74,46 @@ begin)
   # fail-closed secret gate, or the mid-operation hold). This step used to print "committed" regardless.
   if [ -n "$(git -C "${REPO}" status --porcelain -- transcripts/rendered)" ]; then
     die "transcript-autosave did NOT commit transcripts/rendered. Its reason is the 'transcript-autosave:' line just above: 'secret SURVIVED' -> run ${PY} transcripts/render-session.py scan transcripts/rendered and fix the HOT line; 'could NOT READ' -> run that scan and fix or remove the UNREADABLE path it names; 'mid-operation or not on main' -> finish the rebase/merge or return to main; no such line -> the commit itself failed (index.lock? git identity?). Then re-run begin"
+  fi
+  # A clean rendered/ is not proof THIS session's transcript is in canon: a render
+  # that crashed (transcript-autosave discards its errors) writes nothing and leaves the tree clean, and a
+  # gitignored output name never shows as dirty. So prove the live session's own file: recorded in the render
+  # state, written this run (or nothing new since its last render), and tracked by git with no diff.
+  if [ -n "${SID}" ]; then
+    LIVE=$($PY - "${REPO}" "${SID}" "${T0}" <<'PYEOF'
+import json, sys, pathlib
+repo, sid, t0 = pathlib.Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+tdir = repo / "transcripts"
+try:
+    excl = [l.split("#", 1)[0].strip() for l in (tdir / "render-exclude.txt").read_text(encoding="utf-8").splitlines()]
+except OSError:
+    excl = []
+if any(e and sid.startswith(e) for e in excl):
+    print("EXCLUDED"); sys.exit()
+try:
+    st = json.loads((tdir / ".render-state.json").read_text(encoding="utf-8")).get(sid) or {}
+except (OSError, ValueError):
+    st = {}
+out = st.get("out")
+f = tdir / "rendered" / out if out else None
+if not f or not f.exists():
+    print("MISSING no rendered file is recorded for this session"); sys.exit()
+src = sorted(pathlib.Path.home().glob(".claude/projects/*/" + sid + ".jsonl"))
+fresh = f.stat().st_mtime >= t0 or (src and abs(src[0].stat().st_mtime - st.get("out_mtime", -1)) < 0.01)
+print(("OK " if fresh else "STALE ") + out)
+PYEOF
+)
+    case "${LIVE}" in
+      EXCLUDED) echo "[spawn-checkpoint] note: this session is in transcripts/render-exclude.txt -- deliberately no rendered transcript." ;;
+      OK\ *)
+        LF="transcripts/rendered/${LIVE#OK }"
+        git -C "${REPO}" ls-files --error-unmatch -- "${LF}" >/dev/null 2>&1 \
+          || die "this session's transcript ${LF} is NOT tracked by git (a .gitignore pattern? check: git check-ignore -v '${LF}') -- it never reaches canon"
+        git -C "${REPO}" diff --quiet HEAD -- "${LF}" \
+          || die "this session's transcript ${LF} has uncommitted changes -- transcript-autosave did not commit it" ;;
+      STALE\ *) die "this session's transcript was NOT re-rendered this run (${LIVE#STALE }, older than the live session) -- run: ${PY} transcripts/render-session.py render --all --project ALL -o transcripts/rendered --redact, read its error, then re-run begin" ;;
+      *) die "this session's transcript was NOT rendered (${LIVE#MISSING }) -- run: ${PY} transcripts/render-session.py render --all --project ALL -o transcripts/rendered --redact, read its error, then re-run begin" ;;
+    esac
   fi
   NEWEST=$($PY - "${REPO}/transcripts/raw" <<'PYEOF'
 import os, sys
@@ -103,6 +152,8 @@ verify)
   case "${MREST}" in mirror=pending*) die "the transcript mirror is still pending (connect it, then begin again)";; esac
   NOW=$(date +%s); [ $(( NOW - T0 )) -le 7200 ] || die "begin stamp is over 2 h old -- run begin again (the transcript moved on)"
   [ -z "$(git status --porcelain -- . ':(exclude)transcripts/rendered')" ] || die "tree is dirty -- save with setup/canon-save.sh first"
+  [ -z "$(git status --porcelain -- transcripts/rendered)" ] \
+    || die "transcripts/rendered has uncommitted changes -- the archive commit is refused (secret gate / hold); fix that and re-run begin"
   [ -n "$(git rev-list "${BASE}..HEAD" 2>/dev/null)" ] || die "no commit since begin -- steps 2+3 haven't been saved"
   git fetch -q origin || die "git fetch failed -- can't prove the push"
   git merge-base --is-ancestor HEAD origin/main || die "HEAD is not in origin/main -- push it (setup/canon-save.sh)"
@@ -139,12 +190,15 @@ else:
 PYEOF
 )
   case "${RESULT}" in OK*) ;; *) die "${RESULT#FAIL }";; esac
-  printf '%s OK %s | %s\n' "$(date +%s)" "${RESULT#OK }" "${MREST}" > "${OKSTAMP}"
+  printf '%s OK %s | %s | session=%s\n' "$(date +%s)" "${RESULT#OK }" "${MREST}" "${SID:-none}" > "${OKSTAMP}"
+  rm -f "${BEGIN}"   # one begin arms the guard once; a later spawn needs a fresh begin
   echo "[spawn-checkpoint] VERIFIED: ${RESULT#OK }; ${MREST}."
-  echo "  ARMED: setup/spawn-guard.sh allows new sessions for the next 60 min. Name the atom + the updated files in the brief."
+  [ -n "${SID}" ] || echo "  ⚠ no CLAUDE_CODE_SESSION_ID in this shell: wrote the SHARED stamp, which spawn-guard honors only for a payload WITHOUT a session_id -- a Claude Code session's spawn stays BLOCKED. Run verify from the session's own Bash tool." >&2
+  echo "  ARMED: setup/spawn-guard.sh allows new sessions from THIS session for the next 60 min. Name the atom + the updated files in the brief."
   ;;
 
 status)
+  echo "session: ${SID:-(none -- shared, unsuffixed stamps)}"
   [ -f "${BEGIN}" ] && echo "begin:  $(cat "${BEGIN}")" || echo "begin:  (none)"
   [ -f "${OKSTAMP}" ] && echo "armed:  $(cat "${OKSTAMP}")" || echo "armed:  (no)"
   ;;
