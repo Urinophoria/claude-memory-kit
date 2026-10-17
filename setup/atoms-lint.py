@@ -9,13 +9,15 @@ HARD failures (exit 1 -- these break the layer or create ambiguity):
   - a line that is not valid JSON (BOM/encoding/corruption -> the whole layer silently degrades)
   - a missing required field (id, claim, src, date, conf)
   - a malformed id (must be <prefix>-NN), a bad date, a bad conf/status value
-  - a DUPLICATE id (the atoms.README 'never reuse' rule -- the exact drift Paul flagged)
+  - a DUPLICATE id (the atoms.README 'never reuse' rule -- the exact drift that prompted this lint)
   - a claim containing a double-quote (breaks the schema's escaping contract)
   - a src that resolves to no memory/<src>.md nor code/<src>/PROJECT.md
   - a superseded atom whose `by` points at a non-existent atom
   - a DANGLING cross-reference: canon .md text references <prefix>-NN but no such atom exists
+  - the BOOT tier over budget: 'boot'-tagged claims > 5,000 chars total, or a superseded atom tagged 'boot'
 
-Advisory (does NOT fail): numbering gaps per prefix; an over-long claim (probably not an atom).
+Advisory (does NOT fail): numbering gaps per prefix; an over-long claim (probably not an atom); a boot
+claim over 700 chars.
 
 Run:  py setup/atoms-lint.py     Exit: 0 = clean, 1 = hard failures (listed).
 """
@@ -191,6 +193,24 @@ def main():
         if c > 1:
             lines = [str(n) for n, a in atoms if a.get("id") == k]
             hard(f"DUPLICATE id '{k}' used {c}x (lines {', '.join(lines)}) -- ids are permanent handles, never reuse")
+
+    # Boot-tier budget. Atoms tagged 'boot' render IN FULL in the SessionStart hook, whose
+    # additionalContext Claude Code caps at 10,000 chars -- past it the model gets a file path + a 2 KB
+    # preview and the whole layer goes unseen. The header, index and newest-gists take ~4K of that, so
+    # the boot claims get BOOT_CLAIM_BUDGET. Boot is a curated core, not a dumping ground: the
+    # per-prompt recall hook surfaces everything else when it is relevant.
+    BOOT_CLAIM_BUDGET, BOOT_CLAIM_WARN = 5000, 700
+    boot = [(n, a) for n, a in atoms if "boot" in (a.get("tags") or [])]
+    boot_chars = sum(len(a.get("claim") or "") for _, a in boot)
+    if boot_chars > BOOT_CLAIM_BUDGET:
+        hard(f"BOOT tier is {boot_chars} chars across {len(boot)} 'boot'-tagged atoms -- over the {BOOT_CLAIM_BUDGET} "
+             f"budget; untag or tighten some (the SessionStart hook is hard-capped at 10,000 chars)")
+    for n, a in boot:
+        aid = a.get("id", f"<line {n}>")
+        if a.get("status") == "superseded":
+            hard(f"{aid}: tagged 'boot' but superseded -- untag it (the boot tier must be live facts)")
+        elif len(a.get("claim") or "") > BOOT_CLAIM_WARN:
+            warn(f"{aid}: boot atom is {len(a['claim'])} chars (> {BOOT_CLAIM_WARN}) -- boot claims should be tight")
 
     # src-containment advisory (provenance drift — see distinctive_terms/src_text above)
     for n, a in atoms:

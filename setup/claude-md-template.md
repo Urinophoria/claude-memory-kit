@@ -3,7 +3,8 @@
 > This is the **thin `~/.claude/CLAUDE.md` pointer** the bootstrap installs into every session's
 > context. Keep it SMALL and STABLE: identity, working style, and pointers to canon — **never** infra
 > facts, versions, IPs, cert status, or to-do lists (those drift per-machine and belong in canon, which
-> loads every session via the atoms hook + the `load-memory` skill). Fill in the `<…>` placeholders once.
+> reaches every session via the atoms hooks — a curated boot tier at session start, topic recall on each
+> message — and the `load-memory` skill). Fill in the `<…>` placeholders once.
 
 ## Who I am
 <YOUR NAME> (<your@email>) — <one line: your role / what you do>.

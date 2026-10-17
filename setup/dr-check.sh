@@ -32,7 +32,7 @@ stale() { echo "  ⤓ $1"; STALE=$((STALE+1)); }
 # certified 'canon is whole' on a fetch failure).
 UNVERIFIED=0
 unverified() { echo "  ⚠ $1"; UNVERIFIED=$((UNVERIFIED+1)); }
-# ATOMS = the fast-fact layer's integrity lint failed. Kept DISTINCT from FAIL on purpose: atoms.jsonl is
+# ATOMS = the fast-fact layer's integrity lint or its delivery check ([6]) failed. Kept DISTINCT from FAIL on purpose: atoms.jsonl is
 # git-tracked and restores byte-identical, so a bad atom does NOT threaten a lossless rebuild — routing it
 # through FAIL would wrongly flip the losslessness verdict RED over a cosmetic typo. So atoms lint failure is
 # a LOUD ADVISORY that never sets FAIL and never gates the exit code; the commit-time write-path gate
@@ -207,8 +207,8 @@ fi
 echo ""; echo "[6] Scale & freshness gates (advisory growth alarms — not V2 blockers)"
 # WHY: single-Read-mandated files silently truncate past ~57 KB (~24k tok at the measured 2.39 B/tok),
 # and the tail goes invisible — exactly how the open-items health hard-gate hid (2026-08-24 sweep).
-# The atoms payload is injected into EVERY session on EVERY machine, a real per-session tax that only
-# grows. These are notes (?), never FAIL — they buy lead time to trim/split before something breaks.
+# These are notes (?), never FAIL — they buy lead time to trim/split before something breaks. (The atoms
+# DELIVERY check below is louder: it reports on the ATOMS advisory channel.)
 for pair in "open-items.md:57000" "STANDARDS.md:57000"; do
   fn="memory/${pair%%:*}"; lim="${pair##*:}"
   b=$(wc -c < "$MEM/$fn" 2>/dev/null || echo 0)
@@ -216,9 +216,65 @@ for pair in "open-items.md:57000" "STANDARDS.md:57000"; do
 done
 b=$(wc -c < "$MEM/MEMORY.md" 2>/dev/null || echo 0)
 [ "${b:-0}" -gt 90000 ] && note "MEMORY.md is $b B (~$((b*10/24)) tok) — the top index needs 2+ Reads; keep the table to highlights, roster is every memory/*.md"
-# atoms SessionStart payload — the per-session injection cost
-ap=$(bash "$MEM/setup/atoms-inject.sh" 2>/dev/null | wc -c)
-[ "${ap:-0}" -gt 48000 ] && note "atoms SessionStart payload is $ap B (~$((ap*10/24)) tok) injected EVERY session/EVERY machine — watch growth; trim resolved/low-value atom groups when it bites"
+# atoms DELIVERY. Claude Code caps a hook's additionalContext at 10,000 chars; past it the model gets a file
+# path + a 2 KB preview. Measuring the JSON envelope against a loose byte budget (this check's old form) can
+# bless a layer that never loads. So: measure the FIELD the model gets, and probe the newest real transcript
+# for the persisted-output marker. Loud advisories on the ATOMS channel (atoms problems never flip the
+# lossless verdict). The probe prints a boolean + a length, never content.
+apy6=""; for c in py python3 python; do command -v "$c" >/dev/null 2>&1 && { "$c" -c 'print(1)' 2>/dev/null | grep -q 1 && apy6="$c" && break; }; done
+if [ -n "$apy6" ]; then
+  bl=$(bash "$MEM/setup/atoms-inject.sh" </dev/null 2>/dev/null | "$apy6" -c "import json,sys
+try: print(len(json.load(sys.stdin)['hookSpecificOutput']['additionalContext']))
+except Exception: print(-1)")
+  if [ "${bl:--1}" -lt 0 ]; then
+    if grep -q '"id"' "$MEM/memory/atoms.jsonl" 2>/dev/null; then
+      echo "  ⚠ atoms boot tier rendered NOTHING parseable — the SessionStart layer is silent. Run: $apy6 setup/atoms-inject.py --stats"; ATOMS=$((ATOMS+1))
+    else
+      note "atoms boot tier is empty — memory/atoms.jsonl has no atoms yet (fine on a fresh install)"
+    fi
+  elif [ "$bl" -gt 10000 ]; then
+    echo "  ⚠ atoms boot tier is $bl chars — OVER Claude Code's 10,000-char hook cap: sessions get a 2 KB preview, not the tier. Trim 'boot' tags (atoms-lint)"; ATOMS=$((ATOMS+1))
+  else
+    ok "atoms boot tier is $bl chars (cap 10,000) — delivered whole"
+  fi
+  probe=$("$apy6" - <<'PROBE' 2>/dev/null
+import glob, json, os, re
+# newest by session START, not mtime: the session running dr-check is always the most recently WRITTEN
+# file, and it may have booted on an older injector than the session that started after it
+def started(f):
+    try:
+        for i, line in enumerate(open(f, encoding="utf-8", errors="replace")):
+            m = re.search(r'"timestamp":\s*"([^"]+)"', line)
+            if m or i > 40:
+                return m.group(1) if m else ""
+    except Exception:
+        pass
+    return ""
+fs = sorted(glob.glob(os.path.expanduser("~/.claude/projects/*/*.jsonl")), key=os.path.getmtime, reverse=True)[:12]
+fs.sort(key=started, reverse=True)
+for f in fs:
+    try:
+        for line in open(f, encoding="utf-8", errors="replace"):
+            if '"hook_additional_context"' not in line or "CANON ATOMS" not in line:
+                continue
+            for c in json.loads(line)["attachment"]["content"]:
+                if "CANON ATOMS" in c or "additionalContext" in c and "persisted-output" in c:
+                    print("persisted" if "persisted-output" in c else "inline", len(c)); raise SystemExit
+    except SystemExit:
+        raise
+    except Exception:
+        continue
+print("none")
+PROBE
+)
+  case "$probe" in
+    persisted*) echo "  ⚠ newest session's atoms boot was PERSISTED to a file (model saw a 2 KB preview) — ${probe#persisted } chars of stub. A session that booted on an older injector shows this until a fresh one starts; if it persists after that, the tier is over the cap"; ATOMS=$((ATOMS+1)) ;;
+    inline*)    ok "newest session's atoms boot arrived INLINE (${probe#inline } chars)" ;;
+    *)          note "atoms delivery probe: no local transcript with a CANON ATOMS boot (fresh box?) — skipped" ;;
+  esac
+else
+  note "atoms delivery check skipped — no working python interpreter"
+fi
 # atoms freshness (source .md newer than its group's newest atom, 2-day grace)
 apy=""; for c in py python3 python; do command -v "$c" >/dev/null 2>&1 && { "$c" --version >/dev/null 2>&1 && apy="$c" && break; }; done
 [ -n "$apy" ] && "$apy" "$MEM/setup/atoms-freshness.py" 2>/dev/null
@@ -264,9 +320,10 @@ elif [ "$STALE" -gt 0 ]; then
 else
   echo " ✅ GREEN — a V2 rebuild would be lossless. Every project resumes from canon."
 fi
-[ "$ATOMS" -gt 0 ] && echo " ⚠ ATOMS: integrity lint is FAILING — advisory, SEPARATE from losslessness above (atoms.jsonl is
-    tracked → a rebuild still restores it byte-identical). Fix memory/atoms.jsonl; the commit-time gate already
-    holds a bad atom back. This does not change the GREEN/FAIL verdict or the exit code."
+[ "$ATOMS" -gt 0 ] && echo " ⚠ ATOMS: the atoms layer is FAILING (integrity lint or delivery, detail above) — advisory, SEPARATE
+    from losslessness above (atoms.jsonl is tracked → a rebuild still restores it byte-identical). Fix
+    memory/atoms.jsonl (or trim the boot tier); the commit-time gate already holds a bad atom back. This
+    does not change the GREEN/FAIL verdict or the exit code."
 echo " (? lines are advisory drift-heuristics, not hard failures — eyeball them."
 echo "  ⚠️ a ⤓ stale repo can FAKE a ? drift line: PROJECT.md looks ahead of a HEAD you"
 echo "  simply haven't pulled yet. Clear ⤓ first, then judge ?.)"

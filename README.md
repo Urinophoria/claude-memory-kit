@@ -13,8 +13,10 @@ make a memory system that actually holds. You bring your own notes.
   commits + pushes. No sync client, no daemon, nothing to rot.
 - **A `load-memory` skill** — the boot sequence: pull first, read the indexes, deep-read what the task
   needs, tell you what's active.
-- **An atoms fast-fact layer** — one-line sourced facts injected into every session so the things you'd
-  otherwise re-explain just *surface*. (With a lint that keeps it honest.)
+- **An atoms fast-fact layer** — one-line sourced facts that *surface* on their own so the things you'd
+  otherwise re-explain don't need re-explaining: a curated core loads at session start, the rest are
+  recalled into the conversation as it reaches their topic. (With a lint that keeps it honest, and a
+  size budget that keeps it under Claude Code's 10,000-char hook cap.)
 - **A doctor (`dr-check`)** — one command answers "if this machine died, would a fresh one rebuild
   everything?" Green = you're safe.
 - **Auto-save hooks** — a safety net that commits + pushes your work at session boundaries, fails

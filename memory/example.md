@@ -24,5 +24,6 @@ what shows in the `MEMORY.md` index. Keep both accurate.
 - Decision: we chose Postgres over MySQL for the main DB (2026-01-10) — reasons live here so no one
   re-litigates it.
 - Standing rule: never run migrations against prod without a backup first.
+- Working style: give one confident recommendation with its evidence, not a menu of options.
 - The seed atoms in `atoms.jsonl` point at this file — open it and you'll see how the fast-fact layer and
   the deep layer connect.

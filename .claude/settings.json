@@ -25,11 +25,18 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "shell": "bash", "command": "bash \"$HOME/Claude-Memory/setup/atoms-inject.sh\" --prompt", "timeout": 10 }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [
           { "type": "command", "shell": "bash", "command": "bash \"$HOME/Claude-Memory/setup/canon-memory-doctrine.sh\"", "timeout": 10, "statusMessage": "Stating canon memory doctrine…" },
-          { "type": "command", "shell": "bash", "command": "bash \"$HOME/Claude-Memory/setup/atoms-inject.sh\"", "timeout": 10, "statusMessage": "Loading canon atoms (fast-fact layer)…" },
+          { "type": "command", "shell": "bash", "command": "bash \"$HOME/Claude-Memory/setup/atoms-inject.sh\" --hook", "timeout": 10, "statusMessage": "Loading canon atoms (boot tier)…" },
           { "type": "command", "shell": "bash", "command": "bash \"$HOME/Claude-Memory/setup/check-canon.sh\"", "timeout": 20, "statusMessage": "Checking GitHub canon (pull-first)…" },
           { "type": "command", "shell": "bash", "command": "bash \"$HOME/Claude-Memory/setup/transcript-autosave.sh\"", "timeout": 90, "statusMessage": "Catching up the session archive…" }
         ]

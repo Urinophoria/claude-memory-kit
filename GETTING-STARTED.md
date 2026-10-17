@@ -102,7 +102,7 @@ Your memory has a few layers, smallest-and-fastest first:
 
 | Layer | What it is | When it loads |
 |---|---|---|
-| **atoms** (`memory/atoms.jsonl`) | one-line **sourced facts** ("the staging server is `deploy-2`, not `deploy-1`") | injected into EVERY session automatically |
+| **atoms** (`memory/atoms.jsonl`) | one-line **sourced facts** ("the staging server is `deploy-2`, not `deploy-1`") | automatically: `boot`-tagged atoms at session start, the rest recalled per message by topic (a small store loads whole) |
 | **memory files** (`memory/*.md`) | the narrative + decisions + runbooks behind those facts | read on demand (the atom's `src` points here) |
 | **project context** (`code/<proj>/PROJECT.md`) | everything needed to resume a code project | read when you work that project |
 | **session notes** (`cowork/<topic>/SESSION.md`) | non-code work threads | read when you resume that thread |
@@ -116,7 +116,11 @@ An **atom** is the fast-fact at the top of that stack. It's a tiny JSON line:
 ```
 
 The **`.md` file named in `src` is the source of truth**; the atom is a distilled pointer to it that
-*surfaces* the fact without you asking. Full rules: **[memory/atoms.README.md](memory/atoms.README.md)**.
+*surfaces* the fact without you asking. While your store is small, every atom loads at session start.
+Once it outgrows the hook's 10,000-char cap, only atoms you tag **`boot`** load up front (keep that to
+the handful every session needs, whatever the topic); the rest arrive as each message touches their
+topic, or on request (`py -3 setuptoms-inject.py --grep TERM`). Full rules:
+**[memory/atoms.README.md](memory/atoms.README.md)**.
 Run `py setup\atoms-lint.py` any time to check your atoms are well-formed (no duplicate ids, every `src`
 resolves) — or just run the doctor, which checks it for you.
 
