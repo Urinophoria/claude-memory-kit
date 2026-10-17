@@ -33,6 +33,29 @@ So:
 Why a script for something you do rarely: the saves you do constantly (rote, unfocused) and the ones you do
 once a month (unpracticed) are both where hand-entry burns you. Encode the judgment once.
 
+### 2B. Before offering a new session (spawn / fork / branch) — checkpoint this one first
+The moment Claude is about to offer a new session, it does **not** offer it yet. First, in order:
+1. **Download the transcript** — `bash setup/spawn-checkpoint.sh begin`: archive + render + commit
+   `rendered/` + mirror the raw tier off-box (`transcripts/mirror-target.txt`). If this box can't reach its
+   mirror, Claude **asks you to connect it** (that's almost always fixable — see §7); only you can waive it
+   (`--mirror-waived "your reason"`).
+2. **Update memory + every relevant project** (`memory/*.md`, `code/<proj>/PROJECT.md`) with what the new
+   session is for, and why.
+3. **Create an atom referencing those updates** (its `src` = one of the files from step 2). Save with
+   `setup/canon-save.sh`, then `bash setup/spawn-checkpoint.sh verify`.
+
+Then offer it, naming the atom + updated files in the brief.
+
+**Why:** spawned sessions can hand work to each other through git, with no human in the loop — but the
+*parent's* reasoning lives only in its live transcript until the session ends. One lost session and the "why"
+is gone. The checkpoint puts the parent's context in canon before the child exists, so the child (and every
+later session) can read its parent, not just its brief.
+
+**Enforced:** `setup/spawn-guard.sh` (PreToolUse on the app's spawn/start-session tools) blocks until a
+`verify` from the last 60 min; `verify` checks a commit since `begin`, a narrative file changed, a new atom
+whose `src` is one of those files, and everything pushed. A plain-text offer ("want me to spin this off?")
+can't be hooked, so the rule binds it anyway. Regression-tested in `setup/test-save-gates.sh`.
+
 ## 3. The index tree moves as one
 When a project changes, update every layer the same session: the project repo → its
 `code/<name>/PROJECT.md` (status + next step + "last active" date) → the row in `code/INDEX.md` → the row

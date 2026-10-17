@@ -15,6 +15,12 @@
         "hooks": [
           { "type": "command", "shell": "bash", "command": "bash \"$HOME/Claude-Memory/setup/canon-memory-guard.sh\"", "timeout": 10 }
         ]
+      },
+      {
+        "matcher": "mcp__.*__(spawn_task|start_session)",
+        "hooks": [
+          { "type": "command", "shell": "bash", "command": "bash \"$HOME/Claude-Memory/setup/spawn-guard.sh\"", "timeout": 10 }
+        ]
       }
     ],
     "PostToolUse": [
