@@ -204,8 +204,10 @@ def main():
             warn(f"{aid}: claim has a double-quote -- valid, but README prefers single quotes (avoids escaping slips)")
         # HARD-fail an atom whose claim inlines a real credential VALUE. Only 'hot' hits count; prose and
         # placeholders are not hot. The context is masked by scan_text, so it never re-leaks.
+        # strict=True: no prose allowance for 'pass:'/'pw:' here -- a claim is short and curated, so a
+        # false flag costs one lint fix, while a missed credential is pushed to every clone.
         if _scan_text and isinstance(a.get("claim"), str):
-            hits, _ = _scan_text(a["claim"])
+            hits, _ = _scan_text(a["claim"], strict=True)
             for (_ln, nm, ctx, is_hot) in hits:
                 if is_hot:
                     hard(f"{aid}: claim appears to INLINE A SECRET ({nm}) -- move the value to a gitignored "

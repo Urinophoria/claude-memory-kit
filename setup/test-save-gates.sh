@@ -16,6 +16,10 @@
 #
 # CONTENT-INDEPENDENT: it seeds its own synthetic fixture (prefix 'tst', memory/zz-gates-*.md) into the
 # scratch clone, so it never depends on real canon facts -- the same file runs on canon and on the kit.
+# That includes transcripts/rendered: the clone's copy is swapped for one clean fixture file (with the real
+# tree, one HOT file or a too-long path failed T14/T31-T34 and looked like a spawn-checkpoint bug).
+# Whether the REAL rendered/ scans clean is its own clearly named check (T0b), since a HOT file there
+# blocks the live archive commit and spawn-checkpoint begin.
 #
 # Usage:  bash setup/test-save-gates.sh [REPO]     (default: the repo this script lives in)
 #         KEEP=1 bash setup/test-save-gates.sh      (keep the scratch dir for inspection)
@@ -48,6 +52,10 @@ R="${HOME}/Claude-Memory"
 # ── setup: bare origin + scratch clone, push pinned, candidate scripts + synthetic fixture installed ──
 git clone -q --bare -c core.longpaths=true "${SRC}" "${BARE}"
 git -C "${BARE}" config --unset remote.origin.url 2>/dev/null || true
+# Pin the bare's HEAD to main: a bare clone inherits the SOURCE's HEAD, so running this from a branch
+# (e.g. a kit port branch) made every plain clone of it -- T0's lint check included -- check out that
+# branch's OLD tip instead of the main under test.
+git -C "${BARE}" symbolic-ref HEAD refs/heads/main
 git clone -q -c core.longpaths=true -b main "${BARE}" "${R}"
 cd "${R}" || { echo "ABORT: cd ${R}"; exit 1; }
 git remote set-url origin "${BARE}"
@@ -59,9 +67,15 @@ git config user.name "Save-Gates Test"; git config user.email "save-gates@exampl
 # HEAD's copy instead of the working tree's hid a scanner false positive (the 10-08..10-17 archive stall) as
 # one "pre-existing" T14 failure, and later made spawn-checkpoint's new commit check look broken.
 for f in setup/session-autosave.sh setup/atoms-lint.py setup/check-canon.sh setup/transcript-autosave.sh setup/canon-save.sh \
-         setup/spawn-checkpoint.sh setup/spawn-guard.sh transcripts/render-session.py; do
+         setup/spawn-checkpoint.sh setup/spawn-guard.sh transcripts/render-session.py \n         transcripts/redaction-test.py transcripts/drift-test.py; do
   [ -f "${SRC}/${f}" ] && cp "${SRC}/${f}" "${R}/${f}"
 done
+# The scratch clone's rendered/ is a synthetic clean fixture, not the repo's real archive (see header).
+git rm -rq --ignore-unmatch transcripts/rendered
+mkdir -p transcripts/rendered
+printf '# zz-gates rendered fixture
+A clean, synthetic rendered transcript.
+' > transcripts/rendered/zz-gates-fixture.md
 printf '# zz-gates-src (test-save-gates fixture)\nSynthetic source file for the tst atoms.\n' > memory/zz-gates-src.md
 printf '# zz-gates-ref (test-save-gates fixture)\nThis file cites tst-01.\n' > memory/zz-gates-ref.md
 printf '# zz-gates-probe (test-save-gates fixture)\n' > memory/zz-gates-probe.md
@@ -127,6 +141,18 @@ add_dangling() { printf '%s\n' "${DANGLE}" >> memory/zz-gates-ref.md; }
 
 echo; echo "== T0 baseline lints clean (else every result below is meaningless)"
 if origin_lints_clean; then ok "base lints clean"; else cat "${T}/verify.out"; echo "ABORT: repo under test fails atoms-lint at HEAD"; exit 1; fi
+
+echo; echo "== T0b the CANDIDATE scanner: its own tests pass, and the REAL repo's rendered/ scans clean"
+# redaction-test pins what must mask / survive / rescan clean (when no gate ran it, a pass/pw relaxation
+# shipped green while it spared real credentials). The real-tree scan is a LIVE-SYSTEM check:
+# a HOT (rc 1) or unreadable (rc 2) file there means the archive commit and spawn-checkpoint begin are
+# blocked on the real box right now -- it is not a failure of the scripts the T-tests below exercise.
+check "redaction-test.py passes" $PY transcripts/redaction-test.py
+[ -f transcripts/drift-test.py ] && check "drift-test.py passes" bash -c "$PY transcripts/drift-test.py > '${T}/drift.out' 2>&1"
+if [ -d "${SRC}/transcripts/rendered" ]; then
+  RS=0; $PY transcripts/render-session.py scan "${SRC}/transcripts/rendered" > "${T}/realscan.out" 2>&1 || RS=$?
+  check "real ${SRC##*/}/transcripts/rendered scans clean with the candidate scanner (rc ${RS}; 1=HOT, 2=unreadable)" [ "${RS}" = 0 ]
+fi
 
 echo; echo "== T1 .md-only DANGLING ref + an unrelated good edit -> bad .md held, rest pushed"
 reset_state; add_dangling; good_edit T1; autosave

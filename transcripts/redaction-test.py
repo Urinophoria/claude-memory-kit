@@ -51,6 +51,25 @@ CASES = [
     ("Both verifications pass: **forms-portal - all 9 edits clean**", [], ["forms-portal"]),
     ("first pass: re-render", [], ["re-render"]),
     ("the tests pass: everything", [], ["everything"]),
+    # --- a first, too-loose pass/pw cut spared these; each must mask ---
+    ("user `labadmin`, Pass: `Kx9#mQ2v`", ["Kx9#mQ2v"], ["labadmin"]),          # code span
+    ("PW: **Hunter2!**", ["Hunter2!"], []),                                      # bold
+    ("pw: #k8Lq2!vZ", ["k8Lq2!vZ"], []),                                         # markup-char opener
+    ("| fw01 | PW: `Xk9#mQ2v` |", ["Xk9#mQ2v"], ["fw01"]),                       # table cell
+    ("WiFi PW: `GuestNet2026`", ["GuestNet2026"], []),
+    ("Pass: HunterGreen", ["HunterGreen"], []),                                  # mixed case, no digit
+    ("Pass: purplemonkeydish", ["purplemonkeydish"], []),                        # 16 chars, one class
+    ("first pass: password=\"Summer2026!\"", ["Summer2026!"], []),               # label nested in a value
+    ("tests pass: `secret=Kx9#mQ2vLp7Zt`", ["Kx9#mQ2vLp7Zt"], []),
+    ("pw: --password=\"Summer2026!\"", ["Summer2026!"], []),
+    ("password: summer-fun-time", ["summer-fun-time"], []),                      # long labels keep the loose rule
+    ("token: abcdefghijklmnopq", ["abcdefghijklmnopq"], []),
+    ("password: `Zq7#Lm2xKp`", ["Zq7#Lm2xKp"], []),
+    # ... while everyday 'pass:' prose still survives (flagging it stalled the fail-closed archive)
+    ("Plex Pass: subscriptionState=\"Active\" again", [], ["subscriptionState"]),  # key="value", no markup
+    ("pw: same-as-before", [], ["same-as-before"]),
+    ("first pass: abcdefghijklmno", [], ["abcdefghijklmno"]),                    # 15 chars, one class: cold
+    ("first pass: abcdefghijklmnop", ["abcdefghijklmnop"], []),                  # 16: hot (boundary)
     ("password: entered", [], ["entered"]),
     ("the api_key: rotation is scheduled", [], ["rotation"]),
     ("cert password: <PFX_PW>", [], ["<PFX_PW>"]),
@@ -74,15 +93,28 @@ def main():
         else:
             p += 1
 
-    # fail-closed: re-scanning redacted output finds nothing hot (what the hook gate relies on)
-    leaky = "secret = " + FAKE_STRIPE + " and password = Winter_2026_Portal_Login"
-    _h, red = rs.scan_text(leaky + "\n", redact=True)
-    hits2, _ = rs.scan_text(red, redact=False)
-    if any(h[3] for h in hits2):
-        f += 1
-        print("  FAIL | re-scan of redacted output still flags a secret (fail-closed broken)")
-    else:
-        p += 1
+    # fail-closed: re-scanning redacted output finds nothing hot (what the hook gate relies on). Checked for
+    # EVERY case plus the conn-string shapes, whose own mask once re-matched: one
+    # 'scheme://user:[REDACTED]@host' in rendered/ stalled the archive and spawn-checkpoint begin.
+    leaky = ["secret = " + FAKE_STRIPE + " and password = Winter_2026_Portal_Login",
+             "ldap://binduser:" + "Zq7Lm2xKp" + "@dc01.example.invalid",
+             "git remote https://deploy:" + "Kx9mQ2vLp7" + "@git.example.invalid/repo.git"]
+    for s in leaky + [c[0] for c in CASES]:
+        _h, red = rs.scan_text(s + "\n", redact=True)
+        hits2, _ = rs.scan_text(red, redact=False)
+        if any(h[3] for h in hits2):
+            f += 1
+            print(f"  FAIL | re-scan of redacted output still flags a secret (fail-closed broken): {red.strip()!r}")
+        else:
+            p += 1
+
+    # strict mode (atoms-lint): no prose allowance for the short labels.
+    for s in ("Pass: hunter!!", "pw: same-as-before"):
+        if any(h[3] for h in rs.scan_text(s + "\n", strict=True)[0]):
+            p += 1
+        else:
+            f += 1
+            print(f"  FAIL | strict scan should flag {s!r}")
 
     print(f"\nredaction-test: {p} passed, {f} failed")
     return 1 if f else 0

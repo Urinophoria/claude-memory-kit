@@ -64,7 +64,7 @@ begin)
   # nothing. The proof is the tree: rendered/ still dirty after it ran = the commit was REFUSED (the
   # fail-closed secret gate, or the mid-operation hold). This step used to print "committed" regardless.
   if [ -n "$(git -C "${REPO}" status --porcelain -- transcripts/rendered)" ]; then
-    die "transcript-autosave did NOT commit transcripts/rendered (secret gate or mid-operation hold) -- run: python3 transcripts/render-session.py scan transcripts/rendered, fix the HOT line, then re-run begin"
+    die "transcript-autosave did NOT commit transcripts/rendered. Its reason is the 'transcript-autosave:' line just above: 'secret SURVIVED' -> run ${PY} transcripts/render-session.py scan transcripts/rendered and fix the HOT line; 'could NOT READ' -> a path too long to scan; 'mid-operation or not on main' -> finish the rebase/merge or return to main; no such line -> the commit itself failed (index.lock? git identity?). Then re-run begin"
   fi
   NEWEST=$($PY - "${REPO}/transcripts/raw" <<'PYEOF'
 import os, sys
@@ -73,7 +73,7 @@ ts = [os.path.getmtime(os.path.join(d, f)) for f in os.listdir(d) if f.endswith(
 print(int(max(ts)) if ts else 0)
 PYEOF
 )
-  [ "${NEWEST:-0}" -ge "${T0}" ] || die "the archive refreshed nothing (no raw .gz written this run) -- run: py -3 transcripts/render-session.py archive --project ALL, and read its error"
+  [ "${NEWEST:-0}" -ge "${T0}" ] || die "the archive refreshed nothing (no raw .gz written this run) -- run: ${PY} transcripts/render-session.py archive --project ALL, and read its error"
   # (1b) the off-box copy.
   MSTAT=""
   TARGET=""

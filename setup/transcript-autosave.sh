@@ -107,8 +107,14 @@ fi
 # If so, do NOT commit — leave rendered/ dirty for review rather than push a credential. The next
 # boundary re-renders + re-scans, so a transient miss self-clears; a real one keeps failing loudly
 # until a human looks. This is the belt to the scanner's suspenders (2026-08-24 sweep, #1 critical).
-if ! "${PY}" "${TOOL}" scan "${REPO}/transcripts/rendered" >/dev/null 2>&1; then
-  echo "⚠️  transcript-autosave: a possible secret SURVIVED redaction in transcripts/rendered — NOT committing/pushing. Review: py transcripts/render-session.py scan transcripts/rendered" >&2
+SCAN_RC=0; "${PY}" "${TOOL}" scan "${REPO}/transcripts/rendered" >/dev/null 2>&1 || SCAN_RC=$?
+if [ "${SCAN_RC}" -ne 0 ]; then
+  # rc 1 = a HOT hit; rc 2 = a file the scan could not read (a scan crash used to read as a secret).
+  if [ "${SCAN_RC}" = 2 ]; then
+    echo "⚠️  transcript-autosave: the secret scan could NOT READ a file in transcripts/rendered (path too long?) — NOT committing/pushing. See: ${PY} transcripts/render-session.py scan transcripts/rendered" >&2
+  else
+    echo "⚠️  transcript-autosave: a possible secret SURVIVED redaction in transcripts/rendered (scan rc ${SCAN_RC}) — NOT committing/pushing. Review: ${PY} transcripts/render-session.py scan transcripts/rendered" >&2
+  fi
   exit 0
 fi
 

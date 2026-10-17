@@ -95,8 +95,11 @@ SECRET_PATTERNS = [
     ("conn-string", re.compile(r"://[^\s:/@]+:([^\s:/@]{4,})@"), 1, True),
     ("assignment", re.compile(
         # "pass"/"pw" added 2026-10-06: a chat-pasted "user: X  Pass: <value>" slipped every label here.
+        # The value is a LOOKAHEAD: a consuming group swallowed a label nested in
+        # the value ('first pass: password="..."'), so the inner, stronger label was never judged. Now
+        # finditer resumes right after the separator and judges every nested assignment on its own.
         r"\b(?:password|passwd|pwd|pass|pw|api[_-]?key|apikey|secret|token|client[_-]?secret)"
-        r"\s*[:=]\s*(\S{6,})", re.IGNORECASE), 1, False),
+        r"\s*[:=]\s*(?=(\S{6,}))", re.IGNORECASE), 1, False),
     ("pfx", re.compile(r"\bpfx[_-]?(?:pw|password)\b", re.IGNORECASE), None, False),
 ]
 
@@ -142,8 +145,15 @@ def looks_high_entropy(value):
 # `subscriptionState="Active"`), and transcript-autosave, which fails closed on any HOT hit in rendered/,
 # then refused every archive commit until a human looked. These two labels get a stricter value test;
 # the long labels (password/token/secret/...) keep the loose, over-redact-is-cheap rule.
+# A first cut of this test also spared any value OPENING with markup (` * # ( < ...) and demanded 20+ chars
+# or a digit, so 'Pass: `Kx9#...`', 'PW: **Hunter2!**' and 'Pass: HunterGreen' went into rendered/
+# verbatim. The markup test is gone (the value is judged with its wrapping stripped) and mixed case or 16+
+# chars count again. What is deliberately still spared: one letter-case + a symbol, no digit, under 16
+# chars ('**forms-portal', 'hunter!!') -- the price of keeping everyday 'pass:' prose cold.
+# Over-redacting a NEW render is cheap (it renders as [REDACTED], which rescans cold). The real constraint
+# is the ALREADY-rendered files: a rule change that turns one of them HOT stalls the fail-closed archive
+# gate until it is re-rendered. Check `scan transcripts/rendered` after any change here.
 _SHORT_LABEL = re.compile(r"\s*(?:pass|pw)\s*[:=]", re.IGNORECASE)
-_MD_OPENERS = "*`[(<{#>|~"
 
 
 def assignment_is_secret(value, label=""):
@@ -167,12 +177,11 @@ def assignment_is_secret(value, label=""):
     if (_HEXISH.fullmatch(v) and len(v) < 20) or _IDENTISH.fullmatch(v):
         return False
     if _SHORT_LABEL.match(label):
-        if value.lstrip()[:1] in _MD_OPENERS:   # '**bold prose**', '`code span`', '[link]' -- markup, not a pasted secret
-            return False
         if re.search(r"=[\"']", v):            # key="value" attribute syntax -- code, not a credential
-            return False
-        # a real pasted credential: 3+ classes, or digits mixed in, or long enough to be a passphrase
-        return _class_count(v) >= 3 or (any(c.isdigit() for c in v) and _class_count(v) >= 2) or len(v) >= 20
+            return False                       # (a secret label nested in it is matched + judged on its own)
+        # a real pasted credential: 3+ classes, or digits mixed in, or mixed case, or passphrase-long
+        return (_class_count(v) >= 3 or (any(c.isdigit() for c in v) and _class_count(v) >= 2)
+                or (any(c.isupper() for c in v) and any(c.islower() for c in v)) or len(v) >= 16)
     return _class_count(v) >= 2 or len(v) >= 16
 
 
@@ -400,8 +409,17 @@ def render(path, mode="conversation", thinking=False, tool_results=False,
 
 # ---------------------------------------------------------------- scanning
 
-def scan_text(text, redact=False):
+def scan_text(text, redact=False, strict=False):
     """Return (hits, text). hits = [(lineno, name, context, was_redacted)].
+
+    strict=True drops the prose allowance for the short 'pass'/'pw' labels (they are judged like
+    'password:'). atoms-lint uses it: an atom claim is short and curated, so over-flagging one is a
+    cheap lint failure, never an archive stall.
+
+    Our own mask '[REDACTED]' inside a captured value is opaque: it is removed and only the rest is judged,
+    so scanning redacted output is idempotent. Without this, 'scheme://user:[REDACTED]@host' re-matched
+    conn-string and the fail-closed rescan refused every archive commit -- and spawn-checkpoint begin with
+    it; 'pass: password=[REDACTED]' read as a 3-class value the same way.
 
     Scans EVERY pattern's EVERY match on each line. The old version ran one .search() per pattern
     and `break`ed after the first pattern that hit the line — so a line carrying two credentials
@@ -420,12 +438,17 @@ def scan_text(text, redact=False):
                     value, span = m.group(group), m.span(group)
                 else:
                     value, span = None, None
-                if always:
+                masked = value is not None and "[REDACTED]" in value
+                if masked:                 # our own mask is opaque: judge only what is left around it
+                    value = value.replace("[REDACTED]", "")
+                if masked and not value.strip(" \t\"'`*.,;()[]{}"):
+                    hot = False            # nothing but the mask: rescanning redacted output stays clean
+                elif always:
                     hot = True
                 elif value is None:
                     hot = False            # markerless pattern (e.g. pfx): report only
                 elif name == "assignment":
-                    hot = assignment_is_secret(value, line[m.start():span[0]])   # label + separator
+                    hot = assignment_is_secret(value, "" if strict else line[m.start():span[0]])   # label + separator
                 else:
                     hot = looks_high_entropy(value)
                 matches.append((span, name, hot))
@@ -1106,16 +1129,34 @@ def cmd_scan(args):
     p = Path(args.target)
     files = sorted(p.rglob("*.md")) if p.is_dir() else [p]
     total_hot = 0
+    unreadable = []
     for f in files:
-        original = f.read_text(encoding="utf-8", errors="replace")
+        # A path past Windows' 260-char MAX_PATH (a deep TMPDIR clone) raised out of this loop, so a scan
+        # crash read as "a secret SURVIVED" to every caller. Retry long paths with
+        # the extended-length prefix; anything still unreadable is reported and exits 2, not 1.
+        try:
+            original = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            try:
+                original = Path("\\\\?\\" + str(f.resolve())).read_text(encoding="utf-8", errors="replace") \
+                    if os.name == "nt" else None
+            except OSError:
+                original = None
+            if original is None:
+                unreadable.append(f)
+                print(f"  UNREADABLE: {f}")
+                continue
         hits, cleaned = scan_text(original, redact=args.redact)
         _, hot = report_scan(str(f), hits)
         total_hot += hot
         if args.redact and cleaned != original:
             f.write_text(cleaned, encoding="utf-8")
             print(f"      → redacted in place: {f.name}")
-    print(f"\n{len(files)} file(s), {total_hot} likely secret(s).")
-    sys.exit(1 if total_hot and not args.redact else 0)
+    print(f"\n{len(files)} file(s), {total_hot} likely secret(s)"
+          + (f", {len(unreadable)} UNREADABLE (not scanned)." if unreadable else "."))
+    if total_hot and not args.redact:
+        sys.exit(1)
+    sys.exit(2 if unreadable else 0)
 
 
 def main():
