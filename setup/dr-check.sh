@@ -209,8 +209,9 @@ echo ""; echo "[6] Scale & freshness gates (advisory growth alarms — not V2 bl
 # and the tail goes invisible — exactly how the open-items health hard-gate hid (2026-08-24 sweep).
 # These are notes (?), never FAIL — they buy lead time to trim/split before something breaks. (The atoms
 # DELIVERY check below is louder: it reports on the ATOMS advisory channel.)
-for pair in "open-items.md:57000" "STANDARDS.md:57000"; do
-  fn="memory/${pair%%:*}"; lim="${pair##*:}"
+for pair in "memory/open-items.md:57000" "STANDARDS.md:57000"; do
+  fn="${pair%%:*}"; lim="${pair##*:}"
+  [ -f "$MEM/$fn" ] || continue   # optional files: a missing one is not a size problem (and `<` would print an error)
   b=$(wc -c < "$MEM/$fn" 2>/dev/null || echo 0)
   [ "${b:-0}" -gt "$lim" ] && note "$fn is $b B (~$((b*10/24)) tok) — near/over the ~57 KB single-Read cap; trim or split (archive resolved, pin gates — T3 pattern)"
 done
