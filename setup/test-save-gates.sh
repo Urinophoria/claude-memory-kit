@@ -148,9 +148,15 @@ echo; echo "== T0b the CANDIDATE scanner: its own tests pass, and the REAL repo'
 # a HOT (rc 1) or unreadable (rc 2) file there means the archive commit and spawn-checkpoint begin are
 # blocked on the real box right now -- it is not a failure of the scripts the T-tests below exercise.
 check "redaction-test.py passes" $PY transcripts/redaction-test.py
-[ -f transcripts/drift-test.py ] && check "drift-test.py passes" bash -c "$PY transcripts/drift-test.py > '${T}/drift.out' 2>&1"
+if [ -f transcripts/drift-test.py ]; then
+  RD=0; $PY transcripts/drift-test.py > "${T}/drift.out" 2>&1 || RD=$?
+  [ "${RD}" = 0 ] || tail -20 "${T}/drift.out"     # the scratch dir is deleted on exit: show why, now
+  check "drift-test.py passes" [ "${RD}" = 0 ]
+fi
 if [ -d "${SRC}/transcripts/rendered" ]; then
   RS=0; $PY transcripts/render-session.py scan "${SRC}/transcripts/rendered" > "${T}/realscan.out" 2>&1 || RS=$?
+  # scan masks its own context lines, so printing them cannot re-leak a value
+  [ "${RS}" = 0 ] || grep -E '‼|UNREADABLE|likely secret' "${T}/realscan.out" | head -20
   check "real ${SRC##*/}/transcripts/rendered scans clean with the candidate scanner (rc ${RS}; 1=HOT, 2=unreadable)" [ "${RS}" = 0 ]
 fi
 

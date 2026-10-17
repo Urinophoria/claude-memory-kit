@@ -32,6 +32,7 @@ See README.md in this folder for the backup/commit policy.
 """
 
 import argparse
+import bisect
 import gzip
 import hashlib
 import json
@@ -95,11 +96,13 @@ SECRET_PATTERNS = [
     ("conn-string", re.compile(r"://[^\s:/@]+:([^\s:/@]{4,})@"), 1, True),
     ("assignment", re.compile(
         # "pass"/"pw" added 2026-10-06: a chat-pasted "user: X  Pass: <value>" slipped every label here.
-        # The value is a LOOKAHEAD: a consuming group swallowed a label nested in
-        # the value ('first pass: password="..."'), so the inner, stronger label was never judged. Now
-        # finditer resumes right after the separator and judges every nested assignment on its own.
+        # The value is NOT consumed: a consuming group swallowed a label nested in the value
+        # ('first pass: password="..."'), so the inner, stronger label was never judged. Now finditer
+        # resumes right after the separator and judges every nested assignment on its own. The value is
+        # the rest of the whitespace-free run, LOOKED UP by scan_text ("run") rather than matched by a
+        # lookahead: a `(?=(\S{6,}))` re-read the whole run at every label, quadratic on a long run.
         r"\b(?:password|passwd|pwd|pass|pw|api[_-]?key|apikey|secret|token|client[_-]?secret)"
-        r"\s*[:=]\s*(?=(\S{6,}))", re.IGNORECASE), 1, False),
+        r"\s*[:=]\s*(?=\S{6})", re.IGNORECASE), "run", False),
     ("pfx", re.compile(r"\bpfx[_-]?(?:pw|password)\b", re.IGNORECASE), None, False),
 ]
 
@@ -140,7 +143,7 @@ def looks_high_entropy(value):
     return _class_count(v) >= 3
 
 
-# "pass" / "pw" are everyday words -- "tests pass:", "Plex Pass:", "first pass:" -- so the shared
+# "pass" / "pw" are everyday words -- "tests pass:", "Pro Pass:", "first pass:" -- so the shared
 # 2-classes rule below read prose as credentials ('**forms-portal' = lower + '-'; a code span
 # `subscriptionState="Active"`), and transcript-autosave, which fails closed on any HOT hit in rendered/,
 # then refused every archive commit until a human looked. These two labels get a stricter value test;
@@ -154,6 +157,12 @@ def looks_high_entropy(value):
 # is the ALREADY-rendered files: a rule change that turns one of them HOT stalls the fail-closed archive
 # gate until it is re-rendered. Check `scan transcripts/rendered` after any change here.
 _SHORT_LABEL = re.compile(r"\s*(?:pass|pw)\s*[:=]", re.IGNORECASE)
+_KV_OPEN = re.compile(r"[$@-]*([A-Za-z_][\w.-]*)=[\"']")          # a value that opens with key=" or key='
+_SECRETISH = re.compile(r"pass|pw|pwd|secret|token|key|cred", re.IGNORECASE)
+# What is left of a value once our own mask is removed, when the mask WAS that assignment's value:
+# '--admin-password=', 'tokenName=""', 'secret: '. The secret is already masked, so it is not hot.
+_MASKED_KV_RESIDUE = re.compile(r"[$@-]*[A-Za-z_][\w.-]*\s*[:=]?\s*[\"'`]*")
+_RUN = re.compile(r"\S+")
 
 
 def assignment_is_secret(value, label=""):
@@ -177,8 +186,13 @@ def assignment_is_secret(value, label=""):
     if (_HEXISH.fullmatch(v) and len(v) < 20) or _IDENTISH.fullmatch(v):
         return False
     if _SHORT_LABEL.match(label):
-        if re.search(r"=[\"']", v):            # key="value" attribute syntax -- code, not a credential
-            return False                       # (a secret label nested in it is matched + judged on its own)
+        # key="value" attribute syntax ('Pro Pass: planState="Active"') is code, not a credential -- but
+        # only when the value OPENS with a non-secret key. Anywhere-in-the-value let a credential through
+        # when another attribute followed it ('@{Pass="..";User=".."}') or the key was a compound secret
+        # name the label regex cannot see ('pw: DB_PASSWORD="..."').
+        kv = _KV_OPEN.match(value.strip().lstrip("`*([{"))
+        if kv and not _SECRETISH.search(kv.group(1)):
+            return False
         # a real pasted credential: 3+ classes, or digits mixed in, or mixed case, or passphrase-long
         return (_class_count(v) >= 3 or (any(c.isdigit() for c in v) and _class_count(v) >= 2)
                 or (any(c.isupper() for c in v) and any(c.islower() for c in v)) or len(v) >= 16)
@@ -431,41 +445,23 @@ def scan_text(text, redact=False, strict=False):
     hits = []
     lines = text.splitlines()
     for i, line in enumerate(lines):
-        matches = []                       # (span_or_None, name, hot)
-        for name, pat, group, always in SECRET_PATTERNS:
-            for m in pat.finditer(line):
-                if group is not None:
-                    value, span = m.group(group), m.span(group)
-                else:
-                    value, span = None, None
-                masked = value is not None and "[REDACTED]" in value
-                if masked:                 # our own mask is opaque: judge only what is left around it
-                    value = value.replace("[REDACTED]", "")
-                if masked and not value.strip(" \t\"'`*.,;()[]{}"):
-                    hot = False            # nothing but the mask: rescanning redacted output stays clean
-                elif always:
-                    hot = True
-                elif value is None:
-                    hot = False            # markerless pattern (e.g. pfx): report only
-                elif name == "assignment":
-                    hot = assignment_is_secret(value, "" if strict else line[m.start():span[0]])   # label + separator
-                else:
-                    hot = looks_high_entropy(value)
-                matches.append((span, name, hot))
+        matches = _line_matches(line, strict)
         if not matches:
             continue
-        # Merge the hot, spanned matches into non-overlapping ranges, then mask right-to-left.
-        red = sorted(sp for (sp, name, hot) in matches if hot and sp is not None)
-        merged = []
-        for s, e in red:
-            if merged and s <= merged[-1][1]:
-                merged[-1][1] = max(merged[-1][1], e)
-            else:
-                merged.append([s, e])
-        display = line
-        for s, e in reversed(merged):
-            display = display[:s] + "[REDACTED]" + display[e:]
-        if redact and merged:
+        display = _mask(line, matches)
+        # Redaction is a FIXPOINT: masking one value can expose another verdict
+        # ('pass: --admin-password="x"' -> 'pass: --admin-password=[REDACTED]', whose outer pass: value is
+        # then 17 chars of residue), so re-scan the masked line until nothing hot is left. The rendered
+        # output therefore always rescans clean -- the property the fail-closed archive gate depends on.
+        # It converges in <= 2 extra rounds on 100k fuzz lines; if it ever did not, the gate's own rescan
+        # would still see the hot span and refuse loudly, never pass it.
+        for _round in range(6):
+            again = [x for x in _line_matches(display, strict) if x[2]]
+            if not again:
+                break
+            matches += again
+            display = _mask(display, again)
+        if redact and display != line:
             lines[i] = display
         ctx = display.strip()
         if len(ctx) > 90:
@@ -473,6 +469,59 @@ def scan_text(text, redact=False, strict=False):
         for span, name, hot in matches:
             hits.append((i + 1, name, ctx, hot))
     return hits, ("\n".join(lines) + "\n" if redact else text)
+
+
+def _line_matches(line, strict=False):
+    """[(span_or_None, name, hot)] for every match of every pattern on one line."""
+    matches = []
+    run_ends = None
+    hot_until = -1                         # end of the furthest HOT run-value so far
+    for name, pat, group, always in SECRET_PATTERNS:
+        for m in pat.finditer(line):
+            if group == "run":             # the value is the rest of this whitespace-free run (looked up)
+                s = m.end()
+                if s < hot_until:          # inside a value already judged hot: its mask covers this one, and
+                    continue               # judging it would re-copy the run (quadratic on 'pass:pass:...')
+                if run_ends is None:
+                    run_ends = [r.end() for r in _RUN.finditer(line)]
+                span = (s, run_ends[bisect.bisect_right(run_ends, s)])
+                value = line[span[0]:span[1]]
+            elif group is not None:
+                value, span = m.group(group), m.span(group)
+            else:
+                value, span = None, None
+            masked = value is not None and "[REDACTED]" in value
+            if masked:                     # our own mask is opaque: judge only what is left around it
+                value = value.replace("[REDACTED]", "")
+            if masked and (not value.strip(" \t\"'`*.,;()[]{}")
+                           or (name == "assignment" and _MASKED_KV_RESIDUE.fullmatch(value.strip(" \t*.,;()[]{}")))):
+                hot = False                # only the mask (or a key whose value IS the mask): already redacted
+            elif always:
+                hot = True
+            elif value is None:
+                hot = False                # markerless pattern (e.g. pfx): report only
+            elif name == "assignment":
+                hot = assignment_is_secret(value, "" if strict else line[m.start():span[0]])   # label + separator
+            else:
+                hot = looks_high_entropy(value)
+            if hot and group == "run":
+                hot_until = max(hot_until, span[1])
+            matches.append((span, name, hot))
+    return matches
+
+
+def _mask(line, matches):
+    """Replace every hot, spanned match with [REDACTED], merging overlaps (right-to-left keeps spans valid)."""
+    red = sorted(sp for (sp, name, hot) in matches if hot and sp is not None)
+    merged = []
+    for s, e in red:
+        if merged and s <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e])
+    for s, e in reversed(merged):
+        line = line[:s] + "[REDACTED]" + line[e:]
+    return line
 
 
 def report_scan(label, hits):

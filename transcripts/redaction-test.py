@@ -23,6 +23,7 @@ FAKE_STRIPE = "sk_" + "live_" + "4eC39HqLyjWDarjtT1zdp7dc00"
 FAKE_GH_PAT = "github_" + "pat_" + "11ABCDEFG0abcdefg1234567"
 FAKE_GLPAT = "glpat" + "-ABCdef123456789_xyzXYZ"
 FAKE_GKEY = "AIza" + "SyD-abcdefghijklmnopqrstuvwxyz012345"
+FAKE_GH_TOKEN = "gh" + "p_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
 
 # (input, must be MASKED [substrings gone], must SURVIVE [substrings kept])
 CASES = [
@@ -47,7 +48,7 @@ CASES = [
     ("PW: Summer!Fun", ["Summer!Fun"], []),
     ("pw=Xk9#mQ2v", ["Xk9#mQ2v"], []),
     ("Pass: correcthorsebatterystaple", ["correcthorsebatterystaple"], []),
-    ("- **Plex Pass: `subscriptionState=\"Active\"`**", [], ["subscriptionState"]),
+    ("- **Pro Pass: `subscriptionState=\"Active\"`**", [], ["subscriptionState"]),
     ("Both verifications pass: **forms-portal - all 9 edits clean**", [], ["forms-portal"]),
     ("first pass: re-render", [], ["re-render"]),
     ("the tests pass: everything", [], ["everything"]),
@@ -66,10 +67,22 @@ CASES = [
     ("token: abcdefghijklmnopq", ["abcdefghijklmnopq"], []),
     ("password: `Zq7#Lm2xKp`", ["Zq7#Lm2xKp"], []),
     # ... while everyday 'pass:' prose still survives (flagging it stalled the fail-closed archive)
-    ("Plex Pass: subscriptionState=\"Active\" again", [], ["subscriptionState"]),  # key="value", no markup
+    ("Pro Pass: subscriptionState=\"Active\" again", [], ["subscriptionState"]),  # key="value", no markup
     ("pw: same-as-before", [], ["same-as-before"]),
     ("first pass: abcdefghijklmno", [], ["abcdefghijklmno"]),                    # 15 chars, one class: cold
     ("first pass: abcdefghijklmnop", ["abcdefghijklmnop"], []),                  # 16: hot (boundary)
+    # --- the key="value" exemption must only cover a value that OPENS with a
+    #     non-secret key; a credential followed by another attribute, or under a compound secret name, masks ---
+    ("$cred = @{Pass=\"Hunter2!x\";User=\"labadmin\"}", ["Hunter2!x"], []),
+    ("login(pw=\"Hunter2!x\",user=\"labadmin\")", ["Hunter2!x"], []),
+    ("PW:\"Hunter2!x\",note=\"rotated\"", ["Hunter2!x"], []),
+    ("pw: DB_PASSWORD=\"Hunter2!x\"", ["Hunter2!x"], []),
+    ("pass: adminPassword='Hunter2!x'", ["Hunter2!x"], []),
+    ("pass: --admin-password=\"Hunter2!x\"", ["Hunter2!x"], []),                # redacts AND rescans clean
+    ("Pass: Password=\"Hunter2!x\"", ["Hunter2!x"], []),
+    ("pw: $Password='Hunter2!x'", ["Hunter2!x"], []),
+    ("pass: ghToken=\"" + FAKE_GH_TOKEN + "\"", [FAKE_GH_TOKEN], []),
+    ("Season Pass: planState=\"Active\" renews", [], ["planState"]),
     ("password: entered", [], ["entered"]),
     ("the api_key: rotation is scheduled", [], ["rotation"]),
     ("cert password: <PFX_PW>", [], ["<PFX_PW>"]),
@@ -107,6 +120,51 @@ def main():
             print(f"  FAIL | re-scan of redacted output still flags a secret (fail-closed broken): {red.strip()!r}")
         else:
             p += 1
+
+    # Property: redaction is a fixpoint over GENERATED nested shapes (outer label x inner key x wrapper x
+    # value). Hand-picked cases once all passed while dozens of realistic label/key pairs rescanned HOT.
+    outers = ["pass: ", "Pass: ", "PW: ", "pw=", "first pass: ", "password: ", "token: ", "secret="]
+    inners = ["", "password=", "Password=", "--admin-password=", "$Password=", "DB_PASSWORD=", "adminPassword=",
+              "tokenName=", "api_key=", "user="]
+    wraps = [("", ""), ("\"", "\""), ("'", "'"), ("`", "`"), ("**", "**"), ("(", ")"), ("@{x=", "}")]
+    values = ["Hunter2!x", "HunterGreen", "purplemonkeydish", "hunter!!", "abc", FAKE_GH_TOKEN,
+              "correct-horse-battery", "[REDACTED]"]
+    bad_fix = 0
+    for o in outers:
+        for n in inners:
+            for wl, wr in wraps:
+                for val in values:
+                    s = o + n + wl + val + wr
+                    _h, red = rs.scan_text(s + "\n", redact=True)
+                    if any(h[3] for h in rs.scan_text(red)[0]):
+                        bad_fix += 1
+                        if bad_fix <= 3:
+                            print(f"  FAIL | not a fixpoint: {s!r} -> {red.strip()!r}")
+    if bad_fix:
+        f += 1
+        print(f"  FAIL | {bad_fix} generated nested shapes rescan HOT after redaction")
+    else:
+        p += 1
+
+    # An ALREADY-rendered line whose secret an older scanner masked must stay cold (a rule change that turns
+    # an old render HOT stalls the fail-closed archive gate until someone re-renders it).
+    for s in ("pass: tokenName=\"[REDACTED]\"", "pass: --admin-password=[REDACTED]", "Pass: `[REDACTED]`",
+              "pw: user=\"labadmin\";Password=\"[REDACTED]\"", "ldap://binduser:[REDACTED]@dc01"):
+        if any(h[3] for h in rs.scan_text(s + "\n")[0]):
+            f += 1
+            print(f"  FAIL | an already-masked line scans HOT: {s!r}")
+        else:
+            p += 1
+
+    # Linear time: a long whitespace-free run dense with labels (the value lookahead made this quadratic).
+    import time
+    t0 = time.time()
+    rs.scan_text("pass:" * 40000 + "\n", redact=True)
+    if time.time() - t0 > 5:
+        f += 1
+        print(f"  FAIL | 200 KB label run took {time.time() - t0:.1f}s (quadratic scan?)")
+    else:
+        p += 1
 
     # strict mode (atoms-lint): no prose allowance for the short labels.
     for s in ("Pass: hunter!!", "pw: same-as-before"):
