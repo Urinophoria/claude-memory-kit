@@ -82,6 +82,14 @@ the transcript redactor are backstops, but the rule is: don't put a real secret 
 If a task needs a tool that isn't installed, install it (and add it to the bootstrap so the next machine
 gets it too). Working around a missing tool builds fragile one-offs; a hook nudges you when a command
 comes back "not found."
+- **The same goes for access.** If a task needs reach Claude doesn't have right now (a VPN, a console, an
+  on-premises service, an admin prompt), Claude **asks you to provide it** — asking is the move. It never
+  quietly narrows the task or skips the part it can't reach.
+- **The other edge: a genuinely portable primitive is not a workaround.** The rule targets a *weaker*
+  stand-in chosen to dodge a tool that exists and is installable. It does not forbid the *right* portable
+  primitive when the usual tool is verifiably absent and not cleanly installable on that platform (e.g.
+  `flock` doesn't exist in Git Bash on Windows; an atomic `mkdir` lock is a correct cross-platform lock).
+  Either way, Claude says what it chose and why — never silently.
 
 ## 8. Two deeper tiers are QUERIED, never loaded
 The `.md` files hold *conclusions*. Two other tiers hold the rest, reached on demand:
