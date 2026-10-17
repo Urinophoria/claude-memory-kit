@@ -128,6 +128,8 @@ resolves) — or just run the doctor, which checks it for you.
 - **Start a session:** open the folder, say `/load-memory` (it pulls first, so you're never stale).
 - **"Is everything saved?"** say **"run the doctor"** → `dr-check.sh`. **GREEN** means a fresh machine
   could rebuild everything perfectly. You're safe.
+- **Save right now:** `bash setup/canon-save.sh "what changed and why"` — the hooks also save at the end
+  of every turn, but this is the one-command foreground save (never hand-roll the git chain; STANDARDS 2A).
 - **Add a machine:** repeat Steps 2–5 on it. Same repo, same context, everywhere.
 
 That's the whole system. The rules that keep it trustworthy are short — read **[STANDARDS.md](STANDARDS.md)**

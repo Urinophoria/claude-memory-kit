@@ -246,8 +246,11 @@ def main():
         tok_re = re.compile(r"\b(" + "|".join(prefixes) + r")-\d+\b")
         referenced = defaultdict(list)   # atom-id -> [where]
         for base, _dirs, files in os.walk(REPO):
-            # skip the transcript/raw/vendored trees; only canon narrative
-            if any(seg in base for seg in (os.sep + ".git", os.sep + "transcripts", os.sep + "Projects", os.sep + "node_modules")):
+            # skip the transcript/raw/vendored trees; only canon narrative. .claude/worktrees holds OTHER
+            # branches' checkouts (git-excluded, not canon): a sibling session's unmerged ref to its own new
+            # atom would read as DANGLING here and falsely block canon-save's lint gate (2026-09-30).
+            if any(seg in base for seg in (os.sep + ".git", os.sep + "transcripts", os.sep + "Projects", os.sep + "node_modules",
+                                           os.sep + os.path.join(".claude", "worktrees"))):
                 continue
             for fn in files:
                 if not fn.endswith(".md"):

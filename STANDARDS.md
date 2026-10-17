@@ -17,6 +17,22 @@ canon, it writes to canon instead and says so.
 - The auto-save hooks are a **safety net for forgetting**, not a substitute for documenting your work.
 - **Uncommitted = doesn't count. Unpushed = doesn't count either** — it dies with the machine.
 
+### 2A. Saving by hand — use `setup/canon-save.sh`, never a hand-rolled git chain
+The hooks fail loud; a git chain typed into the Bash tool bypasses all of that. Two classic ways it lies:
+- **Wrong order.** `pull --rebase` refuses a dirty tree. The save order is **add → commit → pull --rebase → push**.
+- **Pipe-masking.** A pipeline returns its *last* stage's exit code, so `git push … | tail` reports 0 even
+  when the push was rejected, and an `&&` chain sails on. Proof: `false | tail; echo $?` prints `0`.
+
+So:
+- **Use the script:** `bash setup/canon-save.sh "subject" "" "body…"` — `set -euo pipefail`, correct order,
+  authored message required, atoms-lint gated (a hard lint failure refuses the whole save), artifact-verified.
+- **Never pipe a git op whose success you depend on.** If you must, `set -o pipefail` first.
+- **Verify the artifact after any push, not the exit line:** `git fetch`, then
+  `git merge-base --is-ancestor HEAD origin/main`. "It didn't error" is not "it landed."
+
+Why a script for something you do rarely: the saves you do constantly (rote, unfocused) and the ones you do
+once a month (unpracticed) are both where hand-entry burns you. Encode the judgment once.
+
 ## 3. The index tree moves as one
 When a project changes, update every layer the same session: the project repo → its
 `code/<name>/PROJECT.md` (status + next step + "last active" date) → the row in `code/INDEX.md` → the row
