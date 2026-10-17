@@ -3,7 +3,7 @@
 # WHY THIS EXISTS: editing skills/<name>/SKILL.md does NOT update the zips a machine uploads --
 # those live in Downloads\cowork-skills\ and are only rebuilt when this packaging runs. So after
 # any skill edit, run this, then re-upload via Customize > Skills, and update setup\skill-registry.md
-# (STANDARDS §7A). setup-windows.ps1 runs this same logic on a fresh machine; this is the standalone
+# (re-upload a skill after editing it). setup-windows.ps1 runs this same logic on a fresh machine; this is the standalone
 # you run on an EXISTING machine without re-doing the whole prereq install.
 #
 # THE ONE NON-OBVIOUS PART: the zip entries MUST use forward slashes. Compress-Archive and
@@ -97,4 +97,4 @@ Get-ChildItem $skillsRoot -Directory | ForEach-Object {
 Write-Host ""
 Write-Host "Skills packaged: $($built -join ', ')" -ForegroundColor White
 Write-Host "NEXT (per machine): Customize > Skills > + > Create skill > Upload a skill -- upload each .zip"
-Write-Host "      from $zipOut, then record it in setup\skill-registry.md (STANDARDS 7A)." -ForegroundColor Yellow
+Write-Host "      from $zipOut, then record it in setup\skill-registry.md (re-upload after every edit)." -ForegroundColor Yellow

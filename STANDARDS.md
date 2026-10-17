@@ -91,5 +91,23 @@ The `.md` files hold *conclusions*. Two other tiers hold the rest, reached on de
   Reach for it when you need the nuance a summary dropped. Search the words that were *said*, not the
   summary of them.
 
+## 9. The Windows bootstrap chain must run on a FRESH machine under PowerShell 5.1
+`bootstrap.cmd` → `powershell.exe` (**5.1**) → `bootstrap.ps1` → `setup-windows.ps1` is the one path that
+can't assume PowerShell 7 or any installed tool — it's what installs them. Its bugs are invisible on a
+machine that's already set up, so they only bite on a new machine or a rebuild. The rules:
+- **ASCII only in every bootstrap `.ps1`.** 5.1 reads a BOM-less `.ps1` as Windows-1252, so a UTF-8 em dash
+  (`E2 80 94`) decodes to three characters, the last a *double quote* that ends the string early — the
+  whole file fails to parse. A BOM is a crutch an editor can strip; write `-`, `->`, `...` instead.
+  Check both editions: `powershell` *and* `pwsh` (`dr-check [8]` parse-checks every `setup/*.ps1` under 5.1).
+- **Under `$ErrorActionPreference = "Stop"`, a native command that writes to stderr throws** in 5.1 —
+  with `2>&1` *and* with `2>$null`. Probe native tools (Python's Store stub prints "Python was not found"
+  to stderr) inside a local `$ErrorActionPreference = "SilentlyContinue"`, restored in `finally`.
+- **A tool winget just installed is not on this process's PATH.** Probe on disk or prepend its folder.
+- **Re-runs must be safe** — the failure banner says "re-run": never clobber a backup, never hard-exit
+  on an "already installed" state.
+- **Silence is the failure.** Gate every "OK" on the exit code or the artifact, and `exit 0` explicitly at
+  the end, so a trailing benign non-zero can't brand a good machine "FAILED". Only an end-to-end run on a
+  truly fresh machine finds this class.
+
 ---
 *This is a starter set. Add your own rules as you learn what your workflow needs — that's the point.*

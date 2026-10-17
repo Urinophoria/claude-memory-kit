@@ -301,6 +301,44 @@ else
   note "atoms lint skipped — no working python interpreter"
 fi
 
+echo ""; echo "[8] Bootstrap SCRIPT chain parses (the reconstruction CODE, not just the data)"
+# WHY: [1]-[7] certify the canon DATA is whole, but a V2 rebuild is EXECUTED by the setup/*.ps1 scripts.
+# Those can be broken while the data is perfect: a non-ASCII char in a STRING LITERAL with no BOM =
+# PARSE FAIL under Windows PowerShell 5.1, which is exactly what bootstrap.cmd runs -- and it is invisible
+# on any machine that is already provisioned. GREEN must not certify a "lossless rebuild" over a rebuild
+# script that won't parse. Uses powershell.exe when present (Windows/Git Bash); on Linux, a byte heuristic
+# only and says so. A BOM-crutch (parses ONLY because of a BOM) is a NOTE, not a FAIL (STANDARDS 9).
+chain=" bootstrap.ps1 setup-windows.ps1 package-skills.ps1 config.example.ps1 "
+have_pwsh51=0; command -v powershell.exe >/dev/null 2>&1 && have_pwsh51=1
+[ "$have_pwsh51" = "0" ] && note "powershell.exe not found (Linux?) — [8] runs the byte heuristic only; run on Windows for the authoritative 5.1 Parser check"
+for f in "$MEM"/setup/*.ps1; do
+  [ -f "$f" ] || continue; ps=$(basename "$f")
+  is_chain=0; case "$chain" in *" $ps "*) is_chain=1;; esac
+  bom=0; [ "$(head -c3 "$f" | od -An -tx1 2>/dev/null | tr -d ' ')" = "efbbbf" ] && bom=1
+  na=$(LC_ALL=C grep -c $'[\x80-\xFF]' "$f" 2>/dev/null || echo 0)
+  if [ "$have_pwsh51" = "1" ]; then
+    wf=$(cygpath -w "$f" 2>/dev/null || echo "$f")
+    if powershell.exe -NoProfile -NonInteractive -Command "\$e=\$null;[void][System.Management.Automation.Language.Parser]::ParseFile('$wf',[ref]\$null,[ref]\$e);if(\$e -and \$e.Count){exit 1}else{exit 0}" >/dev/null 2>&1; then
+      if [ "$bom" = "1" ] && [ "${na:-0}" -gt 0 ]; then
+        note "setup/$ps parses but is a BOM-crutch (UTF-8 BOM + $na non-ASCII line(s)) — strip to ASCII string literals so it can't re-break if the BOM is dropped (STANDARDS 9)"
+      else
+        ok "setup/$ps parses under PowerShell 5.1"
+      fi
+    elif [ "$is_chain" = "1" ]; then
+      warn "setup/$ps FAILS to parse under Windows PowerShell 5.1 — bootstrap.cmd runs 5.1, a V2 rebuild would ABORT here (STANDARDS 9). FIX before trusting DR."
+    else
+      note "setup/$ps FAILS to parse under 5.1 (off the auto bootstrap chain, not a V2 blocker) — still a STANDARDS 9 landmine; fix or retire it"
+    fi
+  else
+    if [ "$bom" = "0" ] && [ "${na:-0}" -gt 0 ]; then
+      if [ "$is_chain" = "1" ]; then warn "setup/$ps: $na non-ASCII line(s) and NO BOM — LIKELY 5.1 parse break on the rebuild path (verify on Windows)"
+      else note "setup/$ps: $na non-ASCII line(s), no BOM — possible 5.1 parse break (off-chain)"; fi
+    else
+      ok "setup/$ps: byte heuristic OK (run on Windows for the authoritative parse-check)"
+    fi
+  fi
+done
+
 echo ""
 echo "===================================================================="
 if [ "$FAIL" -gt 0 ]; then
