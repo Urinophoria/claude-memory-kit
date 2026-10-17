@@ -3,7 +3,9 @@
 
 Built 2026-08-26 to make the atom system bulletproof before it graduates from PILOT. The frantic
 early work left 4 duplicate ids + a dangling cross-reference (canon referenced wr-27 with no atom);
-nothing caught it. This is the standing check that would have. Run by dr-check.sh [7] as a HARD gate.
+nothing caught it. This is the standing check that would have. It GATES both save paths (the
+session-autosave Stop hook holds back what fails; canon-save refuses the whole save); dr-check [7]
+runs it as an ADVISORY tier (F-B: it never flips the lossless verdict).
 
 HARD failures (exit 1 -- these break the layer or create ambiguity):
   - a line that is not valid JSON (BOM/encoding/corruption -> the whole layer silently degrades)
@@ -20,6 +22,11 @@ Advisory (does NOT fail): numbering gaps per prefix; an over-long claim (probabl
 claim over 700 chars.
 
 Run:  py setup/atoms-lint.py     Exit: 0 = clean, 1 = hard failures (listed).
+      py setup/atoms-lint.py [--root DIR] [--implicated FILE] [ATOMS_JSONL]
+        --root        lint a tree other than ~/Claude-Memory (session-autosave passes an export of the
+                      STAGED index, so it lints exactly what it is about to commit, not the working tree)
+        --implicated  write the repo-relative paths the HARD failures implicate, one per line (empty =
+                      clean) so session-autosave can hold back just those files. Absent after a crash.
 """
 import json, os, re, sys
 from collections import Counter, defaultdict
@@ -32,9 +39,18 @@ try:
 except Exception:
     OK_M, BAD_M, ADV_M = "OK", "X", "?"
 
-REPO = os.path.join(os.path.expanduser("~"), "Claude-Memory")
-# Optional path arg (for tests/CI); defaults to canon. The dangling-ref scan always walks canon REPO.
-ATOMS = sys.argv[1] if len(sys.argv) > 1 else os.path.join(REPO, "memory", "atoms.jsonl")
+_args, _opts = sys.argv[1:], {}
+while len(_args) > 1 and _args[0] in ("--root", "--implicated"):
+    _opts[_args[0]] = _args[1]
+    _args = _args[2:]
+REPO = _opts.get("--root") or os.path.join(os.path.expanduser("~"), "Claude-Memory")
+IMPLICATED_OUT = _opts.get("--implicated")
+# Optional path arg (for tests/CI); defaults to canon. The dangling-ref scan always walks REPO.
+ATOMS = _args[0] if _args else os.path.join(REPO, "memory", "atoms.jsonl")
+try:
+    ATOMS_REL = os.path.relpath(ATOMS, REPO).replace(os.sep, "/")
+except ValueError:  # different drive on Windows
+    ATOMS_REL = ATOMS
 REQUIRED = ("id", "claim", "src", "date", "conf")
 ID_RE = re.compile(r"^[a-z]+-\d+$")
 DATE_RE = re.compile(r"^20\d\d-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$")
@@ -59,8 +75,12 @@ except Exception as e:  # pragma: no cover - defensive
 
 fail = []      # hard failures
 note = []      # advisory
+implicated = set()   # repo-relative paths the hard failures point at (--implicated)
 
-def hard(m): fail.append(m)
+def hard(m, *paths):
+    """A HARD failure. `paths` = the files whose content causes it; default = the atoms file itself."""
+    fail.append(m)
+    implicated.update(paths or (ATOMS_REL,))
 def warn(m): note.append(m)
 
 def resolve_src(src):
@@ -174,7 +194,10 @@ def main():
             elif by not in idset:
                 hard(f"{aid}: superseded 'by' -> '{by}' which is not an existing atom")
         if a.get("src") and not resolve_src(a["src"]):
-            hard(f"{aid}: src '{a['src']}' resolves to no memory/{a['src']}.md nor code/{a['src']}/PROJECT.md")
+            # Implicates the src PATHS (a staged delete/rename of the source .md is the fix-side to hold
+            # back); a new atom with a typo'd src is caught by autosave's atoms.jsonl last resort.
+            hard(f"{aid}: src '{a['src']}' resolves to no memory/{a['src']}.md nor code/{a['src']}/PROJECT.md",
+                 f"memory/{a['src']}.md", f"code/{a['src']}/PROJECT.md")
         # A double-quote INSIDE a claim is valid JSON when escaped (the parser above is the real guard);
         # the README just prefers single quotes to avoid escaping mistakes. Advisory nudge, not a failure.
         if isinstance(a.get("claim"), str) and '"' in a["claim"]:
@@ -249,8 +272,11 @@ def main():
             # skip the transcript/raw/vendored trees; only canon narrative. .claude/worktrees holds OTHER
             # branches' checkouts (git-excluded, not canon): a sibling session's unmerged ref to its own new
             # atom would read as DANGLING here and falsely block canon-save's lint gate (2026-09-30).
-            if any(seg in base for seg in (os.sep + ".git", os.sep + "transcripts", os.sep + "Projects", os.sep + "node_modules",
-                                           os.sep + os.path.join(".claude", "worktrees"))):
+            # Matched against the path RELATIVE to REPO (was the absolute path), so a --root snapshot that
+            # lives under .git/ -- or a HOME that happens to contain one of these names -- isn't skipped whole.
+            rel = os.sep + os.path.relpath(base, REPO)
+            if any(seg in rel for seg in (os.sep + ".git", os.sep + "transcripts", os.sep + "Projects", os.sep + "node_modules",
+                                          os.sep + os.path.join(".claude", "worktrees"))):
                 continue
             for fn in files:
                 if not fn.endswith(".md"):
@@ -261,11 +287,14 @@ def main():
                 except OSError:
                     continue
                 for m in tok_re.finditer(t):
-                    referenced[m.group(0)].append(os.path.relpath(fp, REPO))
+                    # '/' on every OS: these paths feed --implicated (git-style) and the check-canon marker,
+                    # whose quote-stripping `tr` would eat a Windows '\' (memory\x.md -> memoryx.md).
+                    referenced[m.group(0)].append(os.path.relpath(fp, REPO).replace(os.sep, "/"))
         for ref, where in sorted(referenced.items()):
             if ref not in idset:
                 w = Counter(where).most_common(2)
-                hard(f"DANGLING ref '{ref}' -- canon mentions it ({', '.join(f'{p}x {f}' for f, p in w)}) but no such atom exists")
+                hard(f"DANGLING ref '{ref}' -- canon mentions it ({', '.join(f'{p}x {f}' for f, p in w)}) but no such atom exists",
+                     *set(where))
 
     # report
     for m in fail:
@@ -275,6 +304,9 @@ def main():
     if not fail:
         print(f"  {OK_M} atoms integrity OK -- {len(ids)} atoms, no duplicates, all src resolve, no dangling refs"
               + (f" ({len(note)} advisory note(s))" if note else ""))
+    if IMPLICATED_OUT:
+        with open(IMPLICATED_OUT, "w", encoding="utf-8", newline="\n") as fh:
+            fh.writelines(p + "\n" for p in sorted(implicated))
     return 1 if fail else 0
 
 if __name__ == "__main__":

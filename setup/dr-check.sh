@@ -287,8 +287,8 @@ for sk in "$MEM"/skills/*/SKILL.md; do
   [ -n "$sd" ] && note "skill '$sn' repo SKILL.md is $sd — RE-UPLOAD on any machine whose skill-registry.md upload-log row is older (served copy != repo; the June load-memory is dangerous)"
 done
 
-echo ""; echo "[7] Atoms integrity (HARD — duplicates / dangling refs / malformed break the fast-fact layer)"
-# Enforces the atoms.README 'never reuse an id' rule + catches a dangling cross-reference (memory points
+echo ""; echo "[7] Atoms integrity (ADVISORY tier — duplicates / dangling refs / malformed break the fast-fact layer; the save paths gate it)"
+# Enforces the atoms.README 'never reuse an id' rule + catches a dangling cross-reference (canon points
 # at an atom that doesn't exist) and any corruption that would silently degrade the SessionStart layer.
 if [ -n "${apy:-}" ]; then
   if ! "$apy" "$MEM/setup/atoms-lint.py"; then

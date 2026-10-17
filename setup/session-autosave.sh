@@ -35,10 +35,10 @@ ATOMSMARK="${REPO}/.git/atoms-lint-FAILED"
 
 # ── SAFETY BAILOUT (2026-08-26, T1 of the memory-system sweep) ────────────────────────────────
 # NEVER auto-commit while the repo is mid-operation. If a `git rebase origin/main` (the mandated
-# PULL-FIRST) pauses on a conflict, the session ends its turn to ask Paul how to resolve — and
+# PULL-FIRST) pauses on a conflict, the session ends its turn to ask you how to resolve — and
 # ending the turn fires THIS hook. Left unchecked, `git add -A` would stage the conflict MARKERS
 # as the resolution and commit them into canon under a generic message, erasing the real one; the
-# next push then ships marker soup fleet-wide. So bail out (leaving everything exactly as-is for
+# next push then ships marker soup to every machine. So bail out (leaving everything exactly as-is for
 # the human to finish) on ANY of: a merge / cherry-pick / revert in progress, a rebase in progress,
 # an unmerged index, or a HEAD that isn't `main`. This is the fix for the sweep's #1 critical.
 GITDIR=$(git -C "${REPO}" rev-parse --absolute-git-dir 2>/dev/null)
@@ -60,9 +60,110 @@ fi
 # Not mid-operation anymore → clear any stale HELD marker.
 rm -f "${HELDMARK}"
 
+# ── ATOMS-LINT GATE: helpers (F-A, atoms-safety audit 2026-08-28; widened 2026-09-30) ─────────────
+# F-A originally linted ONLY when memory/atoms.jsonl was staged. But a .md-only edit that names a
+# nonexistent atom (a DANGLING ref, e.g. 'std-999') is a HARD lint failure too, and it rode this
+# auto-push to other machines unlinted -- including the rest-of-tree commit this hook makes at turn end
+# right after canon-save has REFUSED that very save. So now the gate runs whenever anything is staged.
+#
+# lint_index lints the STAGED INDEX, mirrored into a scratch tree -- NOT the working tree. Once the gate
+# holds a file back, the commit no longer equals the working tree, and only the index ships. The cascade
+# that proves it: atoms.jsonl held back for one bad atom -> a .md that references a NEW, valid atom in
+# it now dangles against HEAD's atoms.jsonl. A working-tree lint passes that; the commit is broken.
+# Sets LINT_RC: 0 clean | 1 hard failure(s), with LINT_IMPL = the implicated repo-relative paths |
+# 2 could not lint (lint crashed / snapshot sync failed) -- treated as a failure, fail loud |
+# 3 no python -> proceed unlinted (the pre-existing "unlintable -> proceed" rule; nothing to gate with).
+SNAPD="${GITDIR:-${REPO}/.git}/atoms-lint-snap"
+# What the lint reads: every .md (dangling-ref walk + src resolution), the atoms file, and the secret
+# scanner it imports. (Exclude only transcripts' .md -- a bare 'transcripts' exclude drops the scanner.)
+LINT_PATHS=('*.md' ':(exclude)transcripts/*.md' 'memory/atoms.jsonl' 'transcripts/render-session.py')
+
+# sync_snapshot: make ${SNAPD}/tree match the index's LINT_PATHS. The mirror PERSISTS in .git/ and only
+# changed paths are rewritten, because on Windows the first read of a freshly written file pays the AV
+# scan: a full re-export measured ~3.5s per lint vs ~0.4s warm -- too slow for several hold-back rounds
+# under this hook's 30s timeout. tree-id records the index tree the mirror matches; it is deleted BEFORE
+# applying a delta and rewritten only after, so a killed sync forces a full re-export, never a stale pass.
+sync_snapshot() {
+  local new old st p
+  new=$(git -C "${REPO}" write-tree) || return 1
+  old=$(cat "${SNAPD}/tree-id" 2>/dev/null)
+  [ -n "${old}" ] && [ "${new}" = "${old}" ] && [ -d "${SNAPD}/tree" ] && return 0
+  rm -f "${SNAPD}/tree-id"
+  if [ -n "${old}" ] && [ -d "${SNAPD}/tree" ] \
+     && git -C "${REPO}" diff-tree -r -z --no-renames --name-status "${old}" "${new}" -- "${LINT_PATHS[@]}" \
+          > "${SNAPD}/delta" 2>/dev/null; then
+    : > "${SNAPD}/files" || return 1
+    while IFS= read -r -d '' st && IFS= read -r -d '' p; do
+      case "${st}" in
+        D) rm -f "${SNAPD}/tree/${p}" || return 1 ;;
+        *) printf '%s\0' "${p}" >> "${SNAPD}/files" ;;
+      esac
+    done < "${SNAPD}/delta"
+    git -C "${REPO}" checkout-index -f -z --stdin --prefix="${SNAPD}/tree/" < "${SNAPD}/files" || return 1
+  else
+    # First run on this box, or the recorded tree is gone (gc) -- full export. No pipes: a failed export
+    # must fail the sync, never pass as a clean lint.
+    rm -rf "${SNAPD}/tree" && mkdir -p "${SNAPD}/tree" \
+      && git -C "${REPO}" ls-files -z -- "${LINT_PATHS[@]}" > "${SNAPD}/files" \
+      && git -C "${REPO}" checkout-index -z --stdin --prefix="${SNAPD}/tree/" < "${SNAPD}/files" \
+      || return 1
+  fi
+  printf '%s\n' "${new}" > "${SNAPD}/tree-id"
+}
+
+APY="-"
+lint_index() {
+  LINT_IMPL=""; LINT_FIRST=""
+  if [ "${APY}" = "-" ]; then
+    APY=""
+    for c in "py -3" python3 python; do
+      if $c -c "import sys" >/dev/null 2>&1; then APY="$c"; break; fi
+    done
+  fi
+  [ -n "${APY}" ] || { LINT_RC=3; return; }
+  mkdir -p "${SNAPD}" && rm -f "${SNAPD}/implicated" "${SNAPD}/out"
+  if ! sync_snapshot; then
+    LINT_RC=2; LINT_FIRST="could not mirror the staged index for linting"; return
+  fi
+  $APY "${REPO}/setup/atoms-lint.py" --root "${SNAPD}/tree" --implicated "${SNAPD}/implicated" \
+       "${SNAPD}/tree/memory/atoms.jsonl" > "${SNAPD}/out" 2>&1
+  if [ $? -eq 0 ]; then
+    LINT_RC=0
+  elif [ -f "${SNAPD}/implicated" ]; then
+    LINT_RC=1
+    LINT_IMPL="$(tr -d '\r' < "${SNAPD}/implicated")"
+    # First HARD line, glyph stripped by pattern -- NOT `cut -c`, which counts BYTES here and would split
+    # the 3-byte UTF-8 glyph (or claim text) mid-character inside the marker check-canon injects.
+    LINT_FIRST="$(grep -m1 -E '^  (✗|X) ' "${SNAPD}/out")"
+    LINT_FIRST="${LINT_FIRST#  ✗ }"; LINT_FIRST="${LINT_FIRST#  X }"
+  else
+    LINT_RC=2; LINT_FIRST="lint CRASHED: $(tr -d '\r' < "${SNAPD}/out" | tail -n1)"
+  fi
+}
+
+# hold_back PATH: unstage one path. The WORKING TREE is never touched (a new file goes back to untracked,
+# a staged deletion back into the index), so nothing is lost -- it just doesn't commit or push yet.
+HELD=""
+hold_back() {
+  git -C "${REPO}" --literal-pathspecs restore --staged -- "$1" 2>/dev/null \
+    || git -C "${REPO}" --literal-pathspecs reset -q HEAD -- "$1" 2>/dev/null
+  HELD="${HELD}${HELD:+ }$1"
+}
+
+# A marker exists but there is nothing to commit: clear it only if HEAD (== the index here) now lints
+# clean. It used to be cleared blindly on a clean tree -- which would silence a withheld bad tip and leave
+# check-canon's bare "N commits ahead, push them" inviting a raw push of exactly what the gate withheld.
+recheck_marker() {
+  [ -f "${ATOMSMARK}" ] || return 0
+  lint_index
+  [ "${LINT_RC}" = 0 ] && rm -f "${ATOMSMARK}"
+  return 0
+}
+
 # Clean? Then discipline already handled it — drop any stale hint/marker and stay invisible.
 if [ -z "$(git -C "${REPO}" status --porcelain)" ]; then
-  rm -f "${HINT}" "${FAILMARK}" "${ATOMSMARK}"
+  rm -f "${HINT}" "${FAILMARK}"
+  recheck_marker
   exit 0
 fi
 
@@ -81,36 +182,6 @@ fi
 # session boundary through transcript-autosave (which scans first).
 git -C "${REPO}" add -A -- ':(exclude)transcripts/rendered'
 
-# ── ATOMS: WRITE-PATH GATE (F-A) + PATH-SCOPED COMMIT (F-E) ─────────────────────────────────────
-# F-A: atoms-lint is otherwise only a MANUAL doctor (dr-check), so a malformed / duplicate-id / off-vocab /
-#   secret-inlining atom would ride THIS auto-push to every machine before anything validates it. If
-#   memory/atoms.jsonl is staged and FAILS lint, hold JUST that file back; the rest of the tree still commits.
-# F-E: if it PASSES (or can't be linted — no python), commit atoms.jsonl in its OWN path-scoped commit,
-#   isolated from the .md bundle, so a `git revert` of a bad atom can never cross into a source .md. Both are
-#   contained to the atoms layer (atoms.jsonl is tracked, restores byte-identical → never risks the repo).
-ATOMSCOMMITTED=""
-[ -n "$(git -C "${REPO}" status --porcelain -- memory/atoms.jsonl 2>/dev/null)" ] || rm -f "${ATOMSMARK}"
-if git -C "${REPO}" diff --cached --name-only -- memory/atoms.jsonl | grep -q .; then
-  APY=""
-  for c in "py -3" python3 python; do
-    if $c -c "import sys" >/dev/null 2>&1; then APY="$c"; break; fi
-  done
-  if [ -n "${APY}" ] && ! $APY "${REPO}/setup/atoms-lint.py" "${REPO}/memory/atoms.jsonl" >/dev/null 2>&1; then
-    # F-A: bad atom — hold it back from commit/push, drop a marker (rest of the tree still commits below).
-    git -C "${REPO}" restore --staged -- memory/atoms.jsonl 2>/dev/null \
-      || git -C "${REPO}" reset -q HEAD -- memory/atoms.jsonl
-    printf 'atoms-lint FAILED %s — memory/atoms.jsonl HELD BACK from commit/push (a bad atom must not reach other machines). Fix it: `py -3 setup/atoms-lint.py`, then it commits normally. The REST of your work committed fine.\n' \
-      "$(date '+%Y-%m-%d %H:%M')" > "${ATOMSMARK}"
-    echo "session-autosave: atoms.jsonl FAILED atoms-lint — held back from the push (rest committed). See ~/Claude-Memory/.git/atoms-lint-FAILED." >&2
-  else
-    # F-E: clean (or unlintable) → commit atoms.jsonl ALONE (pathspec = revert-isolated from any .md).
-    rm -f "${ATOMSMARK}"
-    if git -C "${REPO}" commit -q -m "atoms: fast-fact autosave $(date '+%Y-%m-%d %H:%M') (path-scoped, revert-isolated — F-E)" -- memory/atoms.jsonl 2>/dev/null; then
-      ATOMSCOMMITTED=1
-    fi
-  fi
-fi
-
 # Nothing actually staged? Then this was a no-op (only rendered/ was dirty, or a CRLF renormalization
 # left the tree phantom-dirty). That is a clean-equivalent, NOT a backstop failure — clear any
 # hint/marker and stay invisible. (Pass-2 #5: the old code let a no-op commit's rc=1 write a FALSE
@@ -118,11 +189,94 @@ fi
 # of the very marker the fail-loud path exists for.)
 if git -C "${REPO}" diff --cached --quiet; then
   rm -f "${HINT}" "${FAILMARK}"
-  # If only atoms changed, the F-E path-scoped commit above still needs to ship (the main push below is
-  # skipped because we exit here). No-op if nothing is actually ahead.
-  [ -n "${ATOMSCOMMITTED}" ] && git -C "${REPO}" push -q origin main 2>/dev/null
+  recheck_marker
   exit 0
 fi
+
+# ── ATOMS-LINT GATE (F-A) + PATH-SCOPED ATOMS COMMIT (F-E) ────────────────────────────────────────
+# F-A: lint what is about to be committed. On a HARD failure, HOLD BACK (unstage) the staged files the
+#   lint implicates -- atoms.jsonl for a bad atom, every .md carrying a dangling ref, a staged delete of a
+#   src .md -- and re-lint, until the commit lints clean. The held files stay dirty here, uncommitted, so no
+#   pusher (this hook, transcript-autosave, a raw push) can carry them; everything else still commits and
+#   pushes, because nobody watches a Stop hook and stranding the whole tree for one bad ref is worse.
+#   (canon-save, the watched foreground path, refuses the WHOLE save instead.) Marker -> check-canon.
+#   Rejected: commit-all-but-skip-the-push. transcript-autosave pushes HEAD at every session boundary and
+#   check-canon's "ahead" note invites a raw push, so a committed bad tip leaks; an uncommitted one can't.
+# Fallback: if it STILL fails with nothing staged left to blame, the failure is already in HEAD, not from
+#   this turn. Commit anyway (never lose work). Push only if HEAD had no local-only commits (the failure is
+#   then already on origin; pushing can't make it worse). Otherwise -- or if the 8-round cap cut the
+#   hold-back short -- PUSH WITHHELD, marked; transcript-autosave honors that keyword.
+# F-E: a clean atoms.jsonl commits in its OWN path-scoped commit, isolated from the .md bundle, so a
+#   `git revert` of a bad atom can never cross into a source .md.
+AHEAD_BEFORE=$(git -C "${REPO}" rev-list --count origin/main..HEAD 2>/dev/null || echo 0)
+lint_index
+GATE_FIRST="${LINT_FIRST}"
+rounds=0
+while { [ "${LINT_RC}" = 1 ] || [ "${LINT_RC}" = 2 ]; } && [ "${rounds}" -lt 8 ]; do
+  rounds=$((rounds+1))
+  staged=$'\n'"$(git -C "${REPO}" -c core.quotePath=false diff --cached --name-only --no-renames)"$'\n'
+  offenders=""
+  while IFS= read -r p; do
+    case "${staged}" in *$'\n'"${p}"$'\n'*) [ -n "${p}" ] && offenders="${offenders}${p}"$'\n' ;; esac
+  done <<< "${LINT_IMPL}"
+  # Last resort: nothing staged is named, but atoms.jsonl is staged. It is the other half of every
+  # cross-ref (an atom removed out from under an unchanged .md), the owner of a typo'd new src, and the
+  # only file whose content can crash the lint. Hold it; the re-lint says whether that was enough.
+  if [ -z "${offenders}" ]; then
+    case "${staged}" in *$'\n'"memory/atoms.jsonl"$'\n'*) offenders="memory/atoms.jsonl"$'\n' ;; esac
+  fi
+  [ -n "${offenders}" ] || break
+  while IFS= read -r p; do [ -n "${p}" ] && hold_back "${p}"; done <<< "${offenders}"
+  lint_index
+done
+
+# Withhold when the remaining failure can't be proven to be origin's already: HEAD had local-only commits,
+# or the round cap cut the hold-back short (staged offenders may remain -- never push those).
+NOPUSH=""; STILLBAD=""
+case "${LINT_RC}" in 1|2)
+  STILLBAD=1
+  { [ "${AHEAD_BEFORE:-0}" -gt 0 ] 2>/dev/null || [ "${rounds}" -ge 8 ]; } && NOPUSH=1 ;;
+esac
+if [ -n "${HELD}${STILLBAD}" ]; then
+  {
+    printf 'atoms-lint FAILED %s.' "$(date '+%Y-%m-%d %H:%M')"
+    [ -n "${HELD}" ] && printf ' HELD BACK (still dirty here: uncommitted, not pushed): %s.' "${HELD}"
+    if [ -n "${NOPUSH}" ]; then
+      printf ' PUSH WITHHELD: the tip still fails and the cause may not be on origin yet (committed here, NOT pushed; do not raw-push). Still failing: %s.' "${LINT_FIRST}"
+    elif [ -n "${STILLBAD}" ]; then
+      printf ' The tip STILL fails from a pre-existing cause already on origin (pushed anyway): %s.' "${LINT_FIRST}"
+    else
+      printf ' Why: %s.' "${GATE_FIRST}"
+    fi
+    printf ' Everything else committed. Fix: py -3 setup/atoms-lint.py -- clears on the next autosave that lints clean.\n'
+  } > "${ATOMSMARK}"
+  echo "session-autosave: atoms-lint FAILED — held back: ${HELD:-nothing}${NOPUSH:+; PUSH WITHHELD}. See ~/Claude-Memory/.git/atoms-lint-FAILED." >&2
+elif [ "${LINT_RC}" = 0 ]; then
+  rm -f "${ATOMSMARK}"
+fi
+
+ATOMSCOMMITTED=""
+if ! git -C "${REPO}" diff --cached --quiet -- memory/atoms.jsonl; then
+  if git -C "${REPO}" \
+        commit -q -m "atoms: fast-fact autosave $(date '+%Y-%m-%d %H:%M') (path-scoped, revert-isolated — F-E)" \
+        -- memory/atoms.jsonl 2>/dev/null; then
+    ATOMSCOMMITTED=1
+  fi
+fi
+
+# Nothing left staged (everything held back, or atoms.jsonl was the only change and F-E committed it).
+if git -C "${REPO}" diff --cached --quiet; then
+  rm -f "${FAILMARK}"
+  # A hint describes the held work, so keep it for when that lands; otherwise clear it (never let a stale
+  # hint attach to an unrelated later change).
+  [ -n "${HELD}" ] || rm -f "${HINT}"
+  # The F-E commit is real work that still needs to ship (the main push below is skipped by this exit).
+  [ -n "${ATOMSCOMMITTED}" ] && [ -z "${NOPUSH}" ] && git -C "${REPO}" push -q origin main 2>/dev/null
+  exit 0
+fi
+
+# The history says what the commit does NOT contain, so an authored hint can't claim held-back work.
+[ -n "${HELD}" ] && MSG="${MSG}"$'\n\n'"[autosave] HELD BACK, failed atoms-lint (left uncommitted): ${HELD}"
 
 # Something is staged. FAIL-LOUD: on a blocked commit (e.g. a stale .git/index.lock left by a
 # timeout-killed hook), keep the hint and drop a marker that the next SessionStart's check-canon
@@ -142,6 +296,7 @@ fi
 # the next SessionStart's check-canon reports "behind" (diverged), the session pulls-first, and this
 # commit ships then. An ahead-only unpushed state (push failed for another reason) is ALSO now caught
 # by check-canon's ahead-check — so both push-failure modes surface next session without a marker here.
-git -C "${REPO}" push -q origin main 2>/dev/null || true
+# PUSH WITHHELD (gate fallback above) skips it; the marker explains.
+[ -n "${NOPUSH}" ] || git -C "${REPO}" push -q origin main 2>/dev/null || true
 
 exit 0

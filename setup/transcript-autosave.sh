@@ -105,6 +105,11 @@ git -C "${REPO}" \
     commit -q -m "auto: transcript archive $(date '+%Y-%m-%d %H:%M') (session boundary)" \
     2>/dev/null
 
+# Honor session-autosave's atoms-lint gate: PUSH WITHHELD means HEAD fails atoms-lint AND carries
+# local-only commits, so pushing HEAD here would ship exactly what that gate held (2026-09-30). The
+# rendered commit stays local; it rides the next push once the tip lints clean.
+grep -q 'PUSH WITHHELD' "${REPO}/.git/atoms-lint-FAILED" 2>/dev/null && exit 0
+
 # Non-fast-forward reject (origin moved) is benign and self-heals via the next pull-first; an
 # ahead-only unpushed state is surfaced by check-canon next session. Nothing lost either way.
 git -C "${REPO}" push -q origin main 2>/dev/null || true

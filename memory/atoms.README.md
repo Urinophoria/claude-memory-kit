@@ -109,8 +109,19 @@ sessions that never invoke the skill, and recall brings in topic facts as the ta
   malformed id, a **duplicate id** (rule: ids are permanent, never reuse), an unresolvable `src`, a
   dangling `superseded → by`, or a **dangling cross-reference** (canon text mentions `<prefix>-NN` but no
   such atom exists), or a **boot tier over budget** (`boot` claims > 5,000 chars, or a superseded atom
-  tagged `boot`). Run it before committing atom changes — or just run the doctor, which runs it as its own
-  advisory tier ([7]; atoms problems never flip the rebuild verdict).
+  tagged `boot`). Both save paths below run it for you; the doctor also runs it, as its own advisory tier
+  ([7]; atoms problems never flip the rebuild verdict). A hard failure can come from a `.md` alone: a new
+  dangling ref, or deleting/renaming an atom's `src` file.
+- **Save-path gate #1 — `setup/session-autosave.sh` (Stop hook).** Lints the **staged index** (a mirror under
+  `.git/atoms-lint-snap/`, not the working tree) whenever anything is staged. On a hard failure it **holds
+  back** just the implicated staged files (`atoms.jsonl` for a bad atom, each `.md` carrying a dangling ref, a
+  staged delete of a `src` file), re-lints, repeats, then commits + pushes the rest. Held files stay dirty and
+  uncommitted, so no pusher can carry them. If the tip still fails from a cause already in HEAD: pushed anyway
+  when origin already has it, **PUSH WITHHELD** when HEAD has local-only commits (transcript-autosave honors
+  that). Every case drops `.git/atoms-lint-FAILED`, which `check-canon` announces at the next SessionStart.
+  No python → proceeds unlinted.
+- **Save-path gate #2 — `setup/canon-save.sh` (foreground).** Lints before staging whenever there is anything
+  to commit or push; a hard failure **refuses the whole save** — the person at the keyboard fixes it.
 - **`dr-check.sh [6]` delivery check** — measures the boot `additionalContext` field (not the JSON
   envelope) against the 10,000 cap, and probes the newest-started local transcript: if that session's
   atoms boot arrived as `<persisted-output>` (the 2 KB-preview fallback), it says so.

@@ -59,13 +59,14 @@ if [ -f "${HELDMARK}" ]; then
   heldmsg="AUTOSAVE HELD on this box — a previous session bailed mid-operation: ${hreason}. FINISH the rebase/merge (or 'git rebase --abort'), then commit — uncommitted work here is not backed up yet. Clears automatically once the repo is back to a normal state."
 fi
 
-# ATOMS marker: a previous Stop autosave held memory/atoms.jsonl back because it FAILED atoms-lint (the
-# write-path gate — a bad atom must not auto-push). The rest of that session's work DID commit; only the
-# atoms file is stranded, dirty, until the bad atom is fixed.
+# ATOMS marker: a previous Stop autosave's atoms-lint gate fired (a bad atom or a DANGLING atom ref must
+# not auto-push to other machines). Since 2026-09-30 it lints whatever is staged, not just atoms.jsonl, so the
+# held-back files can be any .md; the marker names them, and says if the push itself was WITHHELD. The
+# rest of that session's work DID commit; only the named files are stranded, dirty, until fixed.
 atomsmsg=""
 if [ -f "${ATOMSMARK}" ]; then
-  areason=$(tr -d '\r\n"\\' < "${ATOMSMARK}" 2>/dev/null | cut -c1-300)
-  atomsmsg="ATOMS HELD on this box — memory/atoms.jsonl failed atoms-lint and was held back from the push: ${areason}. Fix it (py -3 setup/atoms-lint.py) and commit atoms.jsonl. Does NOT affect the rest of canon — only the atoms fast-fact layer. Clears on the next clean autosave."
+  areason=$(tr -d '\r\n"\\' < "${ATOMSMARK}" 2>/dev/null | cut -c1-1200)
+  atomsmsg="ATOMS-LINT GATE fired on this box (a bad atom / dangling atom ref must not reach other machines): ${areason} If it says PUSH WITHHELD, do NOT raw-push the ahead commits: fix the lint, then canon-save."
 fi
 
 # Assemble (fetch-failure, then freshness, then markers) into one additionalContext string.
