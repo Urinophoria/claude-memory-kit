@@ -51,10 +51,14 @@ Then offer it, naming the atom + updated files in the brief.
 is gone. The checkpoint puts the parent's context in canon before the child exists, so the child (and every
 later session) can read its parent, not just its brief.
 
-**Enforced:** `setup/spawn-guard.sh` (PreToolUse on the app's spawn/start-session tools) blocks until a
-`verify` from the last 60 min; `verify` checks a commit since `begin`, a narrative file changed, a new atom
-whose `src` is one of those files, and everything pushed. A plain-text offer ("want me to spin this off?")
-can't be hooked, so the rule binds it anyway. Regression-tested in `setup/test-save-gates.sh`.
+**Enforced:** `setup/spawn-guard.sh` (PreToolUse on the app's spawn, start-session and hand-off/fork tools)
+blocks until a `verify` **by the same session** in the last 60 min. Stamps are per session, so a parent's
+checkpoint never covers a child started in its folder; a failed `begin` leaves no stamp, and `verify` consumes
+the `begin` it proved. `begin` proves THIS session's own rendered transcript is tracked and committed (a clean
+`rendered/` is not proof); `verify` checks a commit since `begin`, a narrative file changed, a new atom whose
+`src` is one of those files, and everything pushed. A plain-text offer ("want me to spin this off?") can't be
+hooked, so the rule binds it anyway. Regression-tested in `setup/test-save-gates.sh` (T30-T37; T30b reads the
+matcher itself out of `.claude/settings.json`).
 
 ## 3. The index tree moves as one
 When a project changes, update every layer the same session: the project repo → its
