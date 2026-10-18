@@ -689,6 +689,20 @@ def load_excludes():
     return out
 
 
+_SESSION_LINE = re.compile(r"^\| Session \| `([^`]+)` \|", re.MULTILINE)
+
+
+def rendered_session(path):
+    """The session id in a rendered file's header table (render() writes it, --redact keeps it), or None."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            head = "".join(fh.readline() for _ in range(12))
+    except OSError:
+        return None
+    m = _SESSION_LINE.search(head)
+    return m.group(1) if m else None
+
+
 def cmd_render(args):
     targets = (all_sessions(args.project)
                if args.all else [find_session(args.session, args.project)])
@@ -712,7 +726,8 @@ def cmd_render(args):
     for path in targets:
         if outdir and not args.force:
             done = unchanged(state, path, "out")
-            if done and (outdir / done).exists():
+            # skip only while the recorded file still holds THIS session (a collision may have overwritten it)
+            if done and (outdir / done).exists() and rendered_session(outdir / done) in (None, path.stem):
                 skipped += 1
                 continue
 
@@ -724,6 +739,13 @@ def cmd_render(args):
             stamp = f"{start:%Y-%m-%d}" if start else "undated"
             name = f"{stamp}-{slugify(display_title(meta), meta['session_id'][:8])}.md"
             dest = (outdir or Path(".")) / name
+            # Two sessions opening with the same prompt on the same day ('load my memory', 'Try again') share
+            # a name, and the last writer silently replaced the other's transcript -- six sessions on one box
+            # once mapped to a single file. A name that already holds ANOTHER session's
+            # transcript gets this session's short id appended, so both survive. No existing name changes.
+            owner = rendered_session(dest)
+            if owner and owner != meta["session_id"]:
+                dest = dest.with_name(f"{dest.stem}-{meta['session_id'][:8]}.md")
         elif args.output:
             dest = Path(args.output)
         else:
@@ -737,9 +759,10 @@ def cmd_render(args):
                 else (0, sum(1 for h in hits if h[3]))
             total_hits += hot
             if outdir:
-                # A retitled session renames its output — drop the stale copy.
+                # A retitled session renames its output — drop the stale copy, but only if it IS this
+                # session's (after a name collision the recorded name can hold another session's transcript).
                 stale = (state.get(path.stem) or {}).get("out")
-                if stale and stale != dest.name:
+                if stale and stale != dest.name and rendered_session(outdir / stale) in (None, meta["session_id"]):
                     (outdir / stale).unlink(missing_ok=True)
                 remember(state, path, "out", dest.name)
             if not args.quiet:

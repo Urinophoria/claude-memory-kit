@@ -349,6 +349,10 @@ if [ -f setup/spawn-checkpoint.sh ] && [ -f setup/spawn-guard.sh ]; then
   printf 'garbage\n' > "${OKS}"
   guard "${PL}"; check "garbled stamp -> BLOCK" [ "${G}" = 2 ]
   rm -f "${OKS}"
+  printf '%s OK shared\n' "$(date +%s)" > .git/spawn-checkpoint-OK      # what a session-less run would write
+  guard "${PL}"; check "a fresh SHARED stamp does not arm a payload that carries a session_id" [ "${G}" = 2 ]
+  guard '{}'; check "...it only answers a payload without one" [ "${G}" = 0 ]
+  rm -f .git/spawn-checkpoint-OK
 
   echo; echo "== T30b the settings.json matcher routes every session-creating tool to spawn-guard"
   # T30 pipes payloads straight into the script, so it cannot see the matcher -- which is how start_session
@@ -358,10 +362,18 @@ if [ -f setup/spawn-checkpoint.sh ] && [ -f setup/spawn-guard.sh ]; then
 import json, re, sys
 hooks = json.load(open(sys.argv[1], encoding="utf-8")).get("hooks", {}).get("PreToolUse", [])
 ms = [h.get("matcher", "") for h in hooks if any("spawn-guard.sh" in x.get("command", "") for x in h.get("hooks", []))]
-m = re.compile(ms[0]) if len(ms) == 1 else None
+m = ms[0] if len(ms) == 1 else None
+# Claude Code: a matcher of only [A-Za-z0-9_|, -] is a list of EXACT tool names (split on | or ,);
+# anything else is an unanchored regex. A plain "spawn_task|start_session" would guard nothing.
+if m is not None and re.fullmatch(r"[A-Za-z0-9_|, -]+", m):
+    names = [x.strip() for x in re.split(r"[|,]", m) if x.strip()]
+    hit = lambda t: t in names
+elif m is not None:
+    rx = re.compile(m)
+    hit = lambda t: bool(rx.search(t))
 must = ["mcp__ccd_session__spawn_task", "mcp__ccd_session__start_session", "mcp__ccd_session__hand_off_to_session"]
 never = ["mcp__ccd_session__mark_chapter", "mcp__ccd_session__dismiss_task", "mcp__ccd_session__list_start_targets", "Bash"]
-sys.exit(0 if m and all(m.search(t) for t in must) and not any(m.search(t) for t in never) else 1)
+sys.exit(0 if m and all(hit(t) for t in must) and not any(hit(t) for t in never) else 1)
 PYEOF
 
   echo; echo "== T31 §2B checkpoint: begin on a box with NO mirror -> archives locally, prompts to connect the mirror, exit 3"
@@ -400,6 +412,10 @@ PYEOF
   V=0; bash setup/spawn-checkpoint.sh verify > /dev/null 2> "${T}/v.err" || V=$?
   check "unpushed -> refuse" bash -c "[ '${V}' = 1 ] && grep -q 'not in origin/main' '${T}/v.err'"
   git push -q origin main
+  mkdir -p "${OKS}"                                   # the OK stamp cannot be written (a directory is in the way)
+  V=0; bash setup/spawn-checkpoint.sh verify > "${T}/v.out" 2> "${T}/v.err" || V=$?
+  check "OK stamp unwritable -> verify exit 1, nothing armed, begin stamp kept for the retry" bash -c "[ '${V}' = 1 ] && grep -q 'could not write' '${T}/v.err' && [ -f '${BGS}' ]"
+  rmdir "${OKS}"
   V=0; bash setup/spawn-checkpoint.sh verify > "${T}/v.out" 2> "${T}/v.err" || V=$?
   check "tied atom + pushed -> VERIFIED" bash -c "[ '${V}' = 0 ] && grep -q 'tst-91' '${T}/v.out'"
   guard "${PL}"; check "guard now ALLOWS this session's spawn" [ "${G}" = 0 ]
@@ -412,9 +428,18 @@ PYEOF
   rm -f transcripts/mirror-target.txt; live_turn c
   B=0; bash setup/spawn-checkpoint.sh begin --mirror-waived > /dev/null 2>&1 || B=$?
   check "waiver without a reason -> refuse" [ "${B}" = 1 ]
+  printf '%s OK other\n' "$(date +%s)" > ".git/spawn-checkpoint-OK.${OTHER}"
+  printf 'x\n' > ".git/spawn-checkpoint-begin.${OTHER}"; touch -d '3 days ago' ".git/spawn-checkpoint-begin.${OTHER}"
   live_turn d; B=0; bash setup/spawn-checkpoint.sh begin --mirror-waived "user: off-LAN tonight" > /dev/null 2>&1 || B=$?
   check "waiver with a reason -> ok, recorded" bash -c "[ '${B}' = 0 ] && grep -q 'waived: user: off-LAN tonight' '${BGS}'"
   check "begin disarms an old OK stamp" not test -e "${OKS}"
+  check "begin leaves ANOTHER session's fresh stamp alone" test -f ".git/spawn-checkpoint-OK.${OTHER}"
+  check "...and prunes a stamp days old" not test -e ".git/spawn-checkpoint-begin.${OTHER}"
+  rm -f ".git/spawn-checkpoint-OK.${OTHER}"
+  printf 'stray\n' >> "$(git ls-files transcripts/rendered | grep session-0a1b2c3d | head -1)"
+  V=0; bash setup/spawn-checkpoint.sh verify > /dev/null 2> "${T}/v.err" || V=$?
+  check "verify refuses while transcripts/rendered is dirty" bash -c "[ '${V}' = 1 ] && grep -q 'transcripts/rendered has uncommitted changes' '${T}/v.err'"
+  git checkout -q -- transcripts/rendered
 
   echo; echo "== T35 a REFUSED archive commit: begin dies naming it and leaves NO begin stamp for verify"
   check "(setup) T34's begin left a stamp" test -f "${BGS}"
@@ -424,6 +449,8 @@ PYEOF
   check "the earlier begin stamp is gone" not test -e "${BGS}"
   V=0; bash setup/spawn-checkpoint.sh verify > /dev/null 2> "${T}/v.err" || V=$?
   check "verify refuses (no begin stamp to honor)" bash -c "[ '${V}' = 1 ] && grep -q 'no begin stamp' '${T}/v.err'"
+  V=0; CLAUDE_CODE_SESSION_ID= bash setup/spawn-checkpoint.sh verify > /dev/null 2> "${T}/v.err" || V=$?
+  check "verify with no session id refuses (a shared stamp never arms a session)" bash -c "[ '${V}' = 1 ] && grep -q 'no CLAUDE_CODE_SESSION_ID' '${T}/v.err'"
   git checkout -q -f main; git clean -qfd -- transcripts/rendered; rm -f .git/autosave-HELD
 
   echo; echo "== T37 a render that CRASHES leaves rendered/ clean -- begin still dies (prove THIS session's file)"
@@ -451,6 +478,42 @@ PYEOF
   printf '{"type":"ai-title","aiTitle":"Probe conflict again"}\n' >> "${SJ}"; live_turn h
   B=0; bash setup/spawn-checkpoint.sh begin --mirror-waived "test" > /dev/null 2> "${T}/b.err" || B=$?
   check "an ignored output (clean tree, nothing committed) -> begin exit 1 'NOT tracked'" bash -c "[ '${B}' = 1 ] && grep -q 'NOT tracked' '${T}/b.err'"
+
+
+  echo; echo "== T36c a session listed in render-exclude.txt: begin says so and goes on"
+  reset_state; printf '%s\n' "${SJID}" >> transcripts/render-exclude.txt; git add transcripts/render-exclude.txt; git commit -qm "test: exclude the live session"
+  live_turn x; B=0; bash setup/spawn-checkpoint.sh begin --mirror-waived "test" > "${T}/b.out" 2> "${T}/b.err" || B=$?
+  check "excluded session -> begin ok, prints the deliberate-exclusion note" bash -c "[ '${B}' = 0 ] && grep -q 'deliberately no rendered transcript' '${T}/b.out'"
+
+  echo; echo "== T38 two same-day sessions with the SAME first prompt both reach git, and begin proves the right one"
+  reset_state
+  C1="0a1b2c3d-0000-4000-8000-0000000000c1"; C2="0a1b2c3d-0000-4000-8000-0000000000c2"
+  for c in "${C1}" "${C2}"; do
+    printf '{"type":"last-prompt","lastPrompt":"load my memory"}\n{"type":"user","timestamp":"%s","message":{"role":"user","content":"collision probe %s"}}\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${c}" > "${SLUGD}/${c}.jsonl"; sleep 1
+  done
+  export CLAUDE_CODE_SESSION_ID="${C1}"
+  B=0; bash setup/spawn-checkpoint.sh begin --mirror-waived "test" > /dev/null 2> "${T}/b.err" || B=$?
+  check "begin as the OLDER session -> ok" [ "${B}" = 0 ]
+  check "both transcripts are tracked, each under its own name" bash -c "[ \"\$(git grep -l -e '0000000000c1' HEAD -- transcripts/rendered | wc -l)\" = 1 ] && [ \"\$(git grep -l -e '0000000000c2' HEAD -- transcripts/rendered | wc -l)\" = 1 ]"
+  export CLAUDE_CODE_SESSION_ID="${C2}"; printf '{"type":"user","timestamp":"%s","message":{"role":"user","content":"more"}}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${SLUGD}/${C2}.jsonl"
+  B=0; bash setup/spawn-checkpoint.sh begin --mirror-waived "test" > /dev/null 2> "${T}/b.err" || B=$?
+  check "begin as the NEWER session -> ok too" [ "${B}" = 0 ]
+
+  echo; echo "== T39 a title outside cp1252 (Windows pipe encoding) does not crash begin's proof"
+  C3="0a1b2c3d-0000-4000-8000-0000000000c3"; export CLAUDE_CODE_SESSION_ID="${C3}"
+  printf '{"type":"last-prompt","lastPrompt":"za\u0142aduj pami\u0119\u0107 \u0161koly"}\n{"type":"user","timestamp":"%s","message":{"role":"user","content":"unicode probe"}}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${SLUGD}/${C3}.jsonl"
+  B=0; bash setup/spawn-checkpoint.sh begin --mirror-waived "test" > /dev/null 2> "${T}/b.err" || B=$?
+  check "non-cp1252 title -> begin ok" [ "${B}" = 0 ]
+
+  echo; echo "== T40 the render state lost this session (unwritable / rewritten by another box) -> begin finds it by its header"
+  mv transcripts/.render-state.json "${T}/state.bak" 2>/dev/null; mkdir transcripts/.render-state.json   # load -> {}, save fails
+  printf '{"type":"user","timestamp":"%s","message":{"role":"user","content":"after the state was lost"}}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${SLUGD}/${C3}.jsonl"
+  B=0; bash setup/spawn-checkpoint.sh begin --mirror-waived "test" > /dev/null 2> "${T}/b.err" || B=$?
+  check "no state entry -> begin proves the file by its Session header" [ "${B}" = 0 ]
+  rmdir transcripts/.render-state.json; mv "${T}/state.bak" transcripts/.render-state.json 2>/dev/null
+  export CLAUDE_CODE_SESSION_ID="${SJID}"
 
   rm -rf "${SLUGD}" .git/spawn-checkpoint-begin.* .git/spawn-checkpoint-OK.*
   unset CLAUDE_CODE_SESSION_ID

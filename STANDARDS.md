@@ -54,8 +54,11 @@ later session) can read its parent, not just its brief.
 **Enforced:** `setup/spawn-guard.sh` (PreToolUse on the app's spawn, start-session and hand-off/fork tools)
 blocks until a `verify` **by the same session** in the last 60 min. Stamps are per session, so a parent's
 checkpoint never covers a child started in its folder; a failed `begin` leaves no stamp, and `verify` consumes
-the `begin` it proved. `begin` proves THIS session's own rendered transcript is tracked and committed (a clean
-`rendered/` is not proof); `verify` checks a commit since `begin`, a narrative file changed, a new atom whose
+the `begin` it proved (and refuses to run in a shell with no session id). The step 2-3 evidence is any commit
+after the session's own `begin`, not bound to which session made it. `begin` proves THIS session's own rendered
+transcript is tracked and committed, by the `| Session |` header inside the file, not its name (a clean
+`rendered/` is not proof; two same-day sessions with the same opening prompt used to share one rendered file --
+render now suffixes the second with its short id); `verify` checks a commit since `begin`, a narrative file changed, a new atom whose
 `src` is one of those files, and everything pushed. A plain-text offer ("want me to spin this off?") can't be
 hooked, so the rule binds it anyway. Regression-tested in `setup/test-save-gates.sh` (T30-T37; T30b reads the
 matcher itself out of `.claude/settings.json`).
