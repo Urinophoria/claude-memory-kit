@@ -360,18 +360,33 @@ REL_CUT = 0.5       # keep atoms scoring >= this fraction of the best match
 FORCED = 1e9 - 1    # named ids (1e9) and cue hits (FORCED) bypass scoring and the relative cut
 
 
+_APOS = re.compile("['‘’ʼ`]")
+
+
+def cue_norm(text):
+    """The one normalization cue matching uses -- on the cue AND the prompt (atoms-lint imports it too, so lint
+    judges the form recall actually matches): lowercase, apostrophes dropped ("isn't" = "isnt" = "isn’t"),
+    hyphens read as spaces ('jury-rig' = 'jury rig'), whitespace runs collapsed."""
+    return re.sub(r"\s+", " ", _APOS.sub("", str(text).lower()).replace("-", " ")).strip()
+
+
 def cue_hit(atom, plow):
-    """An atom's `cues` (situation phrases, lowercase) recall it outright when one appears in the prompt as
-    whole words. For rules whose topic words nobody types in the moment: a rule headlined '#1 HARD RULE'
-    is never reached by BM25 from 'pip install failed, use something else' -- a cue like 'pip install'
-    reaches it. Malformed cues are ignored here and hard-failed by atoms-lint."""
+    """An atom's `cues` (situation phrases) recall it outright when one appears in the prompt as whole words.
+    For rules whose topic words nobody types in the moment: a rule headlined '#1 HARD RULE' is never reached by
+    BM25 from 'pip install failed, use something else'; a cue like 'pip install' reaches it. The last word may take a short inflection ('no workaround' matches 'no workarounds', 'jury-rig' matches
+    'jury-rigged', 'winget's'), never an arbitrary tail ('phrase' does not match 'phrasey'). Malformed cues are
+    ignored here and hard-failed by atoms-lint."""
     cues = atom.get("cues")
     if not isinstance(cues, list):
         return False
-    plain = lambda x: x.replace("'", "").replace("’", "")     # "isn't" = "isnt" = "isn’t"
-    p = plain(plow)
-    return any(isinstance(c, str) and c.strip() and
-               re.search(r"(?<![a-z0-9])" + re.escape(plain(c.strip().lower())) + r"(?![a-z0-9])", p) for c in cues)
+    p = cue_norm(plow)
+    for c in cues:
+        if not isinstance(c, str):
+            continue
+        n = cue_norm(c)
+        if len(n) >= 6 and re.search(r"(?<![a-z0-9])" + re.escape(n) + r"(?:s|es|d|ed|ged|ing)?(?![a-z0-9])", p):
+            return True
+    return False
 
 
 def recall(atoms, prompt, exclude=()):
@@ -380,7 +395,9 @@ def recall(atoms, prompt, exclude=()):
     plow = prompt.lower()
     ids_named = set(ID_RE.findall(plow))
     q = set(terms(prompt))
-    cued = [a for a in atoms if cue_hit(a, plow)]
+    # only UNSEEN atoms are cued: a cue for an atom already shown this session must not take one of the
+    # RECALL_MAX slots and then be dropped by the dedupe below
+    cued = [a for a in atoms if a.get("id") not in exclude and cue_hit(a, plow)]
     if not q and not ids_named and not cued:
         return []
     cued_ids = {a.get("id") for a in cued}

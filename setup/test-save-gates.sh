@@ -559,7 +559,50 @@ recall_ids e "the zzgates cue phrase is back" > "${T}/cue_e.out" 2>&1
 check "...but a NEW session is" grep -q 'tst-93' "${T}/cue_e.out"
 check "atoms-lint passes the well-formed cue" bash -c "$PY setup/atoms-lint.py memory/atoms.jsonl > '${T}/lint0.out' 2>&1"
 printf '%s\n' '{"id": "tst-94", "claim": "fixture bad cues", "src": "zz-gates-src", "date": "2026-10-17", "conf": "high", "cues": ["abc"]}' >> memory/atoms.jsonl
-check "atoms-lint hard-fails a cue under 6 chars" bash -c "! $PY setup/atoms-lint.py memory/atoms.jsonl > '${T}/lint.out' 2>&1 && grep -q 'shorter than 6' '${T}/lint.out'"
+check "atoms-lint hard-fails a cue under 6 chars" bash -c "! $PY setup/atoms-lint.py memory/atoms.jsonl > '${T}/lint.out' 2>&1 && grep -q 'under 6 chars' '${T}/lint.out'"
+lint_bad() {   # $1 = label, $2 = the atom's cues JSON, $3 = text the lint must print
+  reset_state
+  printf '{"id": "tst-95", "claim": "fixture cue lint", "src": "zz-gates-src", "date": "2026-10-17", "conf": "high", "cues": %s}\n' "$2" >> memory/atoms.jsonl
+  check "atoms-lint hard-fails $1" bash -c "! $PY setup/atoms-lint.py memory/atoms.jsonl > '${T}/lint.out' 2>&1 && grep -q '$3' '${T}/lint.out'"
+}
+lint_bad "an empty cue list" '[]' 'non-empty list'
+lint_bad "an apostrophe-only cue (normalizes to nothing)" "[\"''''''\"]" 'under 6 chars'
+lint_bad "31 cues" "[$(for n in $(seq 1 31); do printf '"zzcue number %02d",' "$n"; done | sed 's/,$//')]" 'max 30'
+reset_state
+printf '%s\n' '{"id": "tst-96", "claim": "fixture boot cue", "src": "zz-gates-src", "date": "2026-10-17", "conf": "high", "tags": ["boot"], "cues": ["zzgates boot cue"]}' >> memory/atoms.jsonl
+check "atoms-lint warns that cues on a boot atom never fire" bash -c "$PY setup/atoms-lint.py memory/atoms.jsonl > '${T}/lint.out' 2>&1; grep -q 'BOOT atom never fire' '${T}/lint.out'"
+
+echo; echo "== T42b recall(): cue word forms, apostrophes, boundaries, cue + scoring, and no slot lost to a SEEN cued atom"
+check "recall() cue unit cases" $PY - setup/atoms-inject.py <<'PYEOF'
+import importlib.util, sys
+s = importlib.util.spec_from_file_location("ai", sys.argv[1]); ai = importlib.util.module_from_spec(s); s.loader.exec_module(ai)
+def A(i, claim, **k):
+    d = dict(id=i, claim=claim, src="zz", date="2026-10-17", conf="high"); d.update(k); return d
+cued = A("tst-50", "fixture standing rule nobody names", cues=["zzrule cue phrase", "isn't zzthere", "jury-rig"])
+bm = [A("tst-6%d" % n, "QUOKKA WOMBAT FIXTURE %d: quokka wombat detail" % n, tags=["quokka", "wombat"]) for n in range(6)]
+atoms = [cued] + bm + [A("tst-8%d" % n, "unrelated filler atom %d" % n) for n in range(9)]
+ids = lambda p, ex=(): [a["id"] for _, a, _ in ai.recall(atoms, p, ex)]
+fails = []
+def want(cond, msg):
+    if not cond:
+        fails.append("  " + msg)
+want("tst-50" in ids("so the zzrule cue phrases came up"), "plural word form")
+want("tst-50" in ids("that was jury rigged"), "hyphen = space, -ged form")
+want("tst-50" not in ids("so the zzrule cue phrasey came up"), "an arbitrary tail must not match")
+want("tst-50" not in ids("xzzrule cue phrase"), "left word boundary")
+want("tst-50" in ids("it isnt zzthere"), "apostrophe dropped")
+want("tst-50" in ids("it isn’t   zzthere"), "curly apostrophe + whitespace run")
+# BM25 thresholds relaxed so the fixture atoms match on their shared words (the real constants are tuned to canon)
+ai.MIN_SCORE = ai.PAIR_MIN = ai.ANCHOR_IDF = ai.REL_CUT = 0
+plain = ids("quokka wombat fixture", {"tst-50"})
+both = ids("zzrule cue phrase quokka wombat fixture")
+want("tst-50" in both and len([i for i in both if i.startswith("tst-6")]) == ai.RECALL_MAX - 1,
+     "an unseen cued atom + scored matches share the slots: %s" % both)
+seen = ids("zzrule cue phrase quokka wombat fixture", {"tst-50"})
+want(seen == plain and len(seen) == ai.RECALL_MAX, "a SEEN cued atom must not take a slot: %s vs %s" % (seen, plain))
+print("\n".join(fails))
+sys.exit(1 if fails else 0)
+PYEOF
 reset_state
 
 echo; echo "== T23 timing (warm mirror, plain edit)"

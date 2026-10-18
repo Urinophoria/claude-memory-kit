@@ -73,6 +73,21 @@ try:
 except Exception as e:  # pragma: no cover - defensive
     _scan_err = str(e)
 
+# Cue normalization has ONE definition -- atoms-inject.py's cue_norm, which is what recall matches -- loaded from
+# the atoms-inject.py beside this script (the autosave snapshot tree under --root holds no setup/ files).
+_cue_err = ""
+try:
+    _ai_spec = importlib.util.spec_from_file_location(
+        "_atoms_inject", os.path.join(os.path.dirname(os.path.abspath(__file__)), "atoms-inject.py"))
+    _ai = importlib.util.module_from_spec(_ai_spec)
+    _ai_spec.loader.exec_module(_ai)
+    _cue_norm = _ai.cue_norm
+except Exception as e:  # pragma: no cover - defensive: a same-shaped fallback, announced
+    _cue_err = str(e)
+
+    def _cue_norm(text):
+        return re.sub(r"\s+", " ", re.sub("['‘’ʼ`]", "", str(text).lower()).replace("-", " ")).strip()
+
 fail = []      # hard failures
 note = []      # advisory
 implicated = set()   # repo-relative paths the hard failures point at (--implicated)
@@ -146,6 +161,8 @@ def main():
     if _scan_err:
         warn(f"secret-shape scan SKIPPED -- could not load the redaction scanner ({_scan_err[:80]}); "
              f"atoms are NOT checked for inlined credentials this run")
+    if _cue_err:
+        warn(f"cue check used a local copy of cue_norm -- could not load setup/atoms-inject.py ({_cue_err[:80]})")
 
     atoms, ids = [], []
     # utf-8-sig strips a stray BOM so we can report it rather than silently dropping line 1
@@ -200,11 +217,18 @@ def main():
             if not isinstance(cues, list) or not cues or not all(isinstance(c, str) for c in cues):
                 hard(f"{aid}: 'cues' must be a non-empty list of strings")
             else:
+                # judge the NORMALIZED form recall matches (an apostrophe-only cue passed a raw-length check and
+                # then matched every message): >= 6 chars and a real word (3+ letters/digits in a row)
                 for c in cues:
-                    if len(c.strip()) < 6:
-                        hard(f"{aid}: cue {c!r} is shorter than 6 chars -- it would recall the atom on everyday words")
+                    n = _cue_norm(c)
+                    if len(n) < 6 or not re.search(r"[a-z0-9]{3}", n):
+                        hard(f"{aid}: cue {c!r} normalizes to {n!r} -- under 6 chars or no real word; it would recall "
+                             f"the atom on everyday text")
                 if len(cues) > 30:
                     hard(f"{aid}: {len(cues)} cues (max 30) -- cue the situation, not every phrasing")
+                if "boot" in (a.get("tags") or []):
+                    warn(f"{aid}: cues on a BOOT atom never fire -- boot atoms are already shown, and recall never "
+                         f"repeats an atom in a session")
         if a.get("src") and not resolve_src(a["src"]):
             # Implicates the src PATHS (a staged delete/rename of the source .md is the fix-side to hold
             # back); a new atom with a typo'd src is caught by autosave's atoms.jsonl last resort.
