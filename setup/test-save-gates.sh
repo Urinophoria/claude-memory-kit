@@ -68,7 +68,8 @@ git config user.name "Save-Gates Test"; git config user.email "save-gates@exampl
 # one "pre-existing" T14 failure, and later made spawn-checkpoint's new commit check look broken.
 for f in setup/session-autosave.sh setup/atoms-lint.py setup/check-canon.sh setup/transcript-autosave.sh setup/canon-save.sh \
          setup/spawn-checkpoint.sh setup/spawn-guard.sh transcripts/render-session.py \
-         transcripts/redaction-test.py transcripts/drift-test.py .gitignore .claude/settings.json; do
+         transcripts/redaction-test.py transcripts/drift-test.py .gitignore .claude/settings.json \
+         setup/tool-missing-guard.sh setup/tool-missing-guard-test.py setup/atoms-inject.py; do
   [ -f "${SRC}/${f}" ] && cp "${SRC}/${f}" "${R}/${f}"
 done
 # The scratch clone's rendered/ is a synthetic clean fixture, not the repo's real archive (see header).
@@ -518,6 +519,48 @@ PYEOF
   rm -rf "${SLUGD}" .git/spawn-checkpoint-begin.* .git/spawn-checkpoint-OK.*
   unset CLAUDE_CODE_SESSION_ID
 fi
+
+echo; echo "== T41 STANDARDS 7 tool-missing guard: fires on a FAILED call and an exit-masked one, silent on reads"
+if [ -f setup/tool-missing-guard.sh ] && [ -f setup/tool-missing-guard-test.py ]; then
+  check "tool-missing-guard-test.py passes" bash -c "$PY setup/tool-missing-guard-test.py > '${T}/tmg.out' 2>&1 || { cat '${T}/tmg.out'; exit 1; }"
+  check "settings.json runs the guard on PostToolUseFailure AND PostToolUse for Bash + PowerShell" $PY - .claude/settings.json <<'PYEOF'
+import json, re, sys
+hooks = json.load(open(sys.argv[1], encoding="utf-8")).get("hooks", {})
+def covered(ev):
+    for h in hooks.get(ev, []):
+        if any("tool-missing-guard.sh" in x.get("command", "") for x in h.get("hooks", [])):
+            m = h.get("matcher", "")
+            names = [x.strip() for x in re.split(r"[|,]", m)] if re.fullmatch(r"[A-Za-z0-9_|, -]+", m) else None
+            hit = (lambda t: t in names) if names is not None else (lambda t: bool(re.search(m, t)))
+            if hit("Bash") and hit("PowerShell"):
+                return True
+    return False
+sys.exit(0 if covered("PostToolUseFailure") and covered("PostToolUse") else 1)
+PYEOF
+fi
+
+echo; echo "== T42 atom cues: a cue phrase recalls its atom outright; atoms-lint hard-fails a malformed cue"
+reset_state
+mkdir -p "${T}/tmp"
+printf '%s\n' '{"id": "tst-93", "claim": "fixture cued rule", "src": "zz-gates-src", "date": "2026-10-17", "conf": "high", "cues": ["zzgates cue phrase"]}' >> memory/atoms.jsonl
+recall_ids() {   # $1 = session tag (a and d share one session), $2 = the prompt
+  local sid="gates-cue-$1"; [ "$1" = d ] && sid="gates-cue-a"
+  printf '{"session_id":"%s","prompt":"%s"}' "${sid}" "$2" | TMPDIR="${T}/tmp" TEMP="${T}/tmp" TMP="${T}/tmp" $PY setup/atoms-inject.py --prompt
+}
+recall_ids a "so the zzgates cue phrase came up again" > "${T}/cue_a.out" 2>&1
+recall_ids b "nothing relevant here at all" > "${T}/cue_b.out" 2>&1
+recall_ids c "xzzgates cue phrasey" > "${T}/cue_c.out" 2>&1
+recall_ids d "the zzgates cue phrase is back" > "${T}/cue_d.out" 2>&1
+check "the cue phrase in a message recalls tst-93" grep -q 'tst-93' "${T}/cue_a.out"
+check "a message without it does not" not grep -q 'tst-93' "${T}/cue_b.out"
+check "a word that only CONTAINS the cue does not (whole words only)" not grep -q 'tst-93' "${T}/cue_c.out"
+check "the same session is not re-shown the cued atom" not grep -q 'tst-93' "${T}/cue_d.out"
+recall_ids e "the zzgates cue phrase is back" > "${T}/cue_e.out" 2>&1
+check "...but a NEW session is" grep -q 'tst-93' "${T}/cue_e.out"
+check "atoms-lint passes the well-formed cue" bash -c "$PY setup/atoms-lint.py memory/atoms.jsonl > '${T}/lint0.out' 2>&1"
+printf '%s\n' '{"id": "tst-94", "claim": "fixture bad cues", "src": "zz-gates-src", "date": "2026-10-17", "conf": "high", "cues": ["abc"]}' >> memory/atoms.jsonl
+check "atoms-lint hard-fails a cue under 6 chars" bash -c "! $PY setup/atoms-lint.py memory/atoms.jsonl > '${T}/lint.out' 2>&1 && grep -q 'shorter than 6' '${T}/lint.out'"
+reset_state
 
 echo; echo "== T23 timing (warm mirror, plain edit)"
 reset_state; good_edit T23a; autosave; good_edit T23b; autosave

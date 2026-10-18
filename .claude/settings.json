@@ -31,6 +31,14 @@
         ]
       }
     ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          { "type": "command", "shell": "bash", "command": "bash \"$HOME/Claude-Memory/setup/tool-missing-guard.sh\"", "timeout": 10, "statusMessage": "Checking for a missing tool…" }
+        ]
+      }
+    ],
     "UserPromptSubmit": [
       {
         "hooks": [

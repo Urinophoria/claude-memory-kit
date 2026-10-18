@@ -11,8 +11,8 @@ metadata:
 Your `memory/*.md` files hold the depth, but they're not all loaded at session start — so discrete facts
 you already wrote down ("the staging box is `deploy-2`", "the cert expires in December") don't *surface*,
 and you end up re-feeding a cue you know is already in canon. Atoms are the fix: a compact layer of
-one-line facts that **surface on their own** (a curated core at session start, the rest recalled as the
-conversation reaches them), each pointing at the `.md` that holds the full story.
+one-line facts that **surface on their own** (a curated core at session start, the rest recalled when a
+message uses their topic words or `cues`), each pointing at the `.md` that holds the full story.
 
 Two jobs at once:
 1. **Fast-fact store** — the claim surfaces without being asked for.
@@ -73,6 +73,9 @@ would save.
 
 The atoms layer is the always-on counterpart to the `load-memory` skill's deep read: boot covers the quick
 sessions that never invoke the skill, and recall brings in topic facts as the talk turns to them.
+**What recall does NOT reach:** standing behavioral rules. Their topic words are labels ('PAUSE FOR
+ACCURACY', '#1 HARD RULE') that a message in the moment never uses, so BM25 almost never surfaces them.
+Read them through load-memory or `--src NAME`, or give the atom `cues` (below).
 
 ## Atom schema
 ```json
@@ -89,6 +92,7 @@ sessions that never invoke the skill, and recall brings in topic facts as the ta
 | `status` | no | `open` \| `resolved` \| `superseded`. A `superseded` atom is kept for the trail but NOT injected or recalled (`--id` still shows it, flagged). |
 | `by` | no | id of the atom that superseded this one. |
 | `tags` | no | array of topic tags. They count double in recall scoring and anchor a match, so name the topic (`database`, `deploy`), not a mood. `boot` puts the atom in the boot tier. |
+| `cues` | no | array of situation phrases (each >= 6 chars, max 30). A cue appearing in a message as whole words (apostrophes ignored) recalls the atom OUTRIGHT, bypassing scoring -- for rules whose topic words nobody types in the moment (a 'never work around a missing tool' rule: `not installed`, `pip install`, `workaround`). Cue the situation, not every phrasing; atoms-lint hard-fails a malformed or too-short cue. Example: `ex-02`. |
 
 ## The rules (this is what keeps it honest)
 1. **The `.md` file is the source of truth; the atom is a distilled pointer, never a second copy.** If they

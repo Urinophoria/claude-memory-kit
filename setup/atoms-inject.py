@@ -195,7 +195,8 @@ def build_boot(atoms, skipped, total):
     recent = [a for _, a in recent]
 
     counts = Counter(a.get("src", "(unsourced)") for a in atoms)
-    index = "INDEX -- active atoms per source (recalled per message, or `%s --src NAME`): %s" % (
+    index = ("INDEX -- active atoms per source (recalled only when a message uses an atom's topic words or cues -- "
+             "standing rules mostly are NOT, so read them with `%s --src NAME`): %s") % (
         LOOKUP, " · ".join("%s %d" % (s, n) for s, n in counts.most_common()))
 
     boot_lines, full_ids = [], []
@@ -356,13 +357,33 @@ PAIR_MIN = 13.0     # an atom sharing only 2 terms must clear this higher bar (p
 REL_CUT = 0.5       # keep atoms scoring >= this fraction of the best match
 
 
+FORCED = 1e9 - 1    # named ids (1e9) and cue hits (FORCED) bypass scoring and the relative cut
+
+
+def cue_hit(atom, plow):
+    """An atom's `cues` (situation phrases, lowercase) recall it outright when one appears in the prompt as
+    whole words. For rules whose topic words nobody types in the moment: a rule headlined '#1 HARD RULE'
+    is never reached by BM25 from 'pip install failed, use something else' -- a cue like 'pip install'
+    reaches it. Malformed cues are ignored here and hard-failed by atoms-lint."""
+    cues = atom.get("cues")
+    if not isinstance(cues, list):
+        return False
+    plain = lambda x: x.replace("'", "").replace("’", "")     # "isn't" = "isnt" = "isn’t"
+    p = plain(plow)
+    return any(isinstance(c, str) and c.strip() and
+               re.search(r"(?<![a-z0-9])" + re.escape(plain(c.strip().lower())) + r"(?![a-z0-9])", p) for c in cues)
+
+
 def recall(atoms, prompt, exclude=()):
     """Return [(score, atom, matched_terms)], best first."""
     prompt = (prompt or "")[:4000]
-    ids_named = set(ID_RE.findall(prompt.lower()))
+    plow = prompt.lower()
+    ids_named = set(ID_RE.findall(plow))
     q = set(terms(prompt))
-    if not q and not ids_named:
+    cued = [a for a in atoms if cue_hit(a, plow)]
+    if not q and not ids_named and not cued:
         return []
+    cued_ids = {a.get("id") for a in cued}
     docs, idf, avgdl = build_index(atoms)
     k1, b = 1.2, 0.75
     need = LONG_MIN_TERMS if len(q) > LONG_Q else MIN_TERMS
@@ -371,6 +392,9 @@ def recall(atoms, prompt, exclude=()):
         aid = a.get("id")
         if aid in ids_named:
             scored.append((1e9, a, [aid]))
+            continue
+        if aid in cued_ids:
+            scored.append((FORCED, a, ["cue"]))
             continue
         hit = [t for t in q if t in d]
         if len(hit) < need:
@@ -384,9 +408,9 @@ def recall(atoms, prompt, exclude=()):
             scored.append((s, a, hit))
     scored.sort(key=lambda x: -x[0])
     if scored:
-        top = next((s for s, _, _ in scored if s < 1e9), None)
+        top = next((s for s, _, _ in scored if s < FORCED), None)
         if top:
-            scored = [x for x in scored if x[0] >= 1e9 or x[0] >= REL_CUT * top]
+            scored = [x for x in scored if x[0] >= FORCED or x[0] >= REL_CUT * top]
     # rank and cut over ALL atoms, THEN drop what this session has seen: dedupe only ever removes —
     # repeating a topic must not promote the weaker matches that the first pass cut
     return [x for x in scored[:RECALL_MAX] if x[1].get("id") not in exclude]

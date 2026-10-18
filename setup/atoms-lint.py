@@ -193,6 +193,18 @@ def main():
                 hard(f"{aid}: status=superseded but no 'by' pointer")
             elif by not in idset:
                 hard(f"{aid}: superseded 'by' -> '{by}' which is not an existing atom")
+        # cues: situation phrases that recall the atom outright. A malformed value would be
+        # skipped silently by recall, and a very short cue would fire on every other message -- both hard.
+        if "cues" in a:
+            cues = a["cues"]
+            if not isinstance(cues, list) or not cues or not all(isinstance(c, str) for c in cues):
+                hard(f"{aid}: 'cues' must be a non-empty list of strings")
+            else:
+                for c in cues:
+                    if len(c.strip()) < 6:
+                        hard(f"{aid}: cue {c!r} is shorter than 6 chars -- it would recall the atom on everyday words")
+                if len(cues) > 30:
+                    hard(f"{aid}: {len(cues)} cues (max 30) -- cue the situation, not every phrasing")
         if a.get("src") and not resolve_src(a["src"]):
             # Implicates the src PATHS (a staged delete/rename of the source .md is the fix-side to hold
             # back); a new atom with a typo'd src is caught by autosave's atoms.jsonl last resort.
