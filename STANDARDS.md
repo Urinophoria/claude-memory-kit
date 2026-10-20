@@ -92,6 +92,11 @@ comes back "not found."
 - **The same goes for access.** If a task needs reach Claude doesn't have right now (a VPN, a console, an
   on-premises service, an admin prompt), Claude **asks you to provide it** — asking is the move. It never
   quietly narrows the task or skips the part it can't reach.
+- **A prompt Claude handed you is *pending*, not *blocked* — Claude re-checks it.** Sign-in, passkey,
+  MFA, elevation, VPN and site-permission prompts tend to get answered while Claude keeps working, and you
+  shouldn't have to announce it. So Claude re-polls the prompt before any message that reports it as
+  pending, between work items while other work runs, and before ending a turn on "waiting on you" — and
+  resumes the blocked task the moment it clears. A "still blocked" report from a stale look is wrong.
 - **The other edge: a genuinely portable primitive is not a workaround.** The rule targets a *weaker*
   stand-in chosen to dodge a tool that exists and is installable. It does not forbid the *right* portable
   primitive when the usual tool is verifiably absent and not cleanly installable on that platform (e.g.
